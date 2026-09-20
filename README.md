@@ -25,9 +25,6 @@ upstream.
   model-scoped row, with the reset time beside each pill and a smaller status
   line. Accounts without a scoped window, and Enterprise accounts, keep the
   upstream two-row screen.
-
-  <img src="screenshots/usage-three-rows.png" width="240" alt="Three-row usage screen (simulator render)">
-
 - **Daemons read the OAuth usage endpoint.** All three daemons (Linux bash,
   macOS/Linux Python, Windows Python) now call `GET /api/oauth/usage`, the same
   source Claude Code's `/usage` screen uses. It returns the 5h/7d windows plus
@@ -51,8 +48,8 @@ The device boots into the splash. Tap the screen anywhere to switch to the Usage
 
 |              Splash               |              Usage              |
 | :-------------------------------: | :-----------------------------: |
-| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |
-|   Splash; touch-toggle anytime    | Session and weekly utilization (plus a per-model row when reported, see [About this fork](#about-this-fork)) |
+| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage-three-rows.png) |
+|   Splash; touch-toggle anytime    | Session, weekly, and per-model (Fable) utilization — simulator render; see [About this fork](#about-this-fork) |
 
 While the splash is up, the middle (PWR) button cycles animations. **Hold the power button for 3 seconds, then release, to put the device into pairing mode** — this clears the saved Bluetooth bond and re-advertises. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
 
