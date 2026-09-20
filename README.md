@@ -38,12 +38,18 @@ upstream.
   config choose the key each button sends (single keys or chords such as
   `ctrl+shift+p`); the install scripts prompt for them. Upstream hardcodes
   Space and Shift+Tab. See [Physical buttons](#physical-buttons).
-- **Simulator launcher and QA hooks.** `./sim.sh` builds and runs the desktop
-  simulator in one step (`--usage`, `--scenario`, `--size 368x448`).
+- **Live desktop window.** The simulator has a live mode: every daemon
+  writes its latest payload to `latest.json` next to its config, and the sim
+  follows that file, so `./sim.sh` opens a window on your Mac showing exactly
+  what the board shows (the macOS daemon keeps polling with the board off, so
+  the window works without hardware). `./make-app.sh` wraps it in a local,
+  git-ignored `dist/Clawdmeter.app` with a Dock icon. Upstream's sim only
+  plays back a scenario file. See [`SIM-USAGE.md`](SIM-USAGE.md).
+- **Simulator launcher and QA hooks.** `./sim.sh` builds and runs the sim in
+  one step (`--demo`, `--scenario`, `--top`, `--size 368x448`).
   `SIM_BOOT_SCREEN=usage` enables headless screenshots without editing
   `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides check the
-  368×448 and 240×240 layouts without hardware. See
-  [`SIM-USAGE.md`](SIM-USAGE.md).
+  368×448 and 240×240 layouts without hardware.
 
 Staying in sync: `git fetch upstream && git merge upstream/main` (the fork
 tracks upstream `main` with no rebases, so merges stay clean).

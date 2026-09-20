@@ -7,15 +7,29 @@ unmodified. Only `ble.cpp`/`chime.cpp` are swapped for stubs. Sources live in
 `firmware/src/boards/sim/` (HAL against SDL2 + Arduino shims in `shim/`), with
 scenario data in `firmware/sim/`.
 
+It has two data sources:
+
+- **Live** (the `./sim.sh` default): the daemon mirrors every payload it sends
+  to `~/.config/claude-usage-monitor/latest.json` (Windows:
+  `%LOCALAPPDATA%\Clawdmeter\latest.json`), and the window follows that
+  file — you see what the board shows, updated once a minute. The macOS daemon
+  keeps polling and writing the file when no board is reachable, so the window
+  works with the device off. If the file is older than three minutes at
+  startup the sim waits for a fresh write instead of showing stale numbers.
+- **Demo** (`--demo` / `--scenario FILE`): loops a `.jsonl` scenario for UI
+  iteration and CI screenshots.
+
 ## Build & run
 
 ```bash
 sudo apt install libsdl2-dev        # one-time (macOS: brew install sdl2)
-./sim.sh                            # builds if needed, then runs
+./sim.sh                            # live data, usage view (builds if needed)
+./sim.sh --top                      # …kept above other windows
+./sim.sh --demo                     # scenario playback instead
 ```
 
-`./sim.sh --build` forces a rebuild after firmware edits, `--usage` boots
-straight to the usage view, `--scenario FILE` plays another `.jsonl`, and
+`./sim.sh --build` forces a rebuild after firmware edits, `--splash` boots to
+the splash like hardware, `--scenario FILE` plays another `.jsonl`, and
 `--size 368x448` (or `240x240`) builds for another panel geometry. The
 manual equivalent is:
 
@@ -98,6 +112,16 @@ override to return to 480):
 PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=368 -DLCD_HEIGHT=448" pio run -d firmware -e sim
 PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=240 -DLCD_HEIGHT=240" pio run -d firmware -e sim
 ```
+
+## macOS app bundle
+
+`./make-app.sh` builds `dist/Clawdmeter.app`: the sim binary with SDL2 bundled
+inside, a launcher that starts live mode on the usage view, and an icon made
+from the official Clawd still. `--install` copies it to `~/Applications`,
+`--open` launches it. `dist/` is git-ignored on purpose — the bundle is only
+ad-hoc signed, so build it on the Mac that runs it rather than copying it
+around (Gatekeeper would refuse a copied one). `CLAWDMETER_ALWAYS_ON_TOP=1`
+and `CLAWDMETER_DEMO=1` in the environment change the launcher's behaviour.
 
 ## Caveat
 

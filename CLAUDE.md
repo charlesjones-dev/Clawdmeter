@@ -153,12 +153,17 @@ Device path differs by OS: `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM0` on Linux
 
 ```bash
 sudo apt install libsdl2-dev   # once (macOS: brew install sdl2)
-./sim.sh            # builds if needed, then runs (--build, --usage, --scenario F, --size 368x448)
+./sim.sh            # LIVE mode (follows the daemon's latest.json), usage view; --demo/--scenario F for playback,
+                    # --top always-on-top, --build, --size 368x448. ./make-app.sh → dist/Clawdmeter.app (git-ignored)
 # manual: pio run -d firmware -e sim && (cd firmware && .pio/build/sim/program)
 ```
 
 An SDL2 window stands in for the 480×480 panel; the **full firmware loop runs
-unmodified** — `main.cpp`, `ui.cpp`, `splash.cpp`, idle fade, pair gesture,
+unmodified**. Two data sources: **live** (`SIM_MODE=live`, `ble_sim.cpp` tails
+the daemon's `latest.json` mirror — every daemon writes it on each send, and
+the macOS daemon's `HeadlessPoller` keeps it fresh with no board connected)
+and **scenario** playback (default for the bare binary, used by CI/autoshots).
+The firmware loop — `main.cpp`, `ui.cpp`, `splash.cpp`, idle fade, pair gesture,
 JSON parsing, usage-rate/chime logic. Only `ble.cpp`/`chime.cpp` are swapped
 for stubs. How it works: `boards/sim/` implements the HAL against SDL2, thin
 Arduino shims live in `boards/sim/shim/` (`millis`/`Serial`→stdio,

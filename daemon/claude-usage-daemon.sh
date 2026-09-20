@@ -13,6 +13,7 @@ POLL_INTERVAL=60
 TICK=5
 SAVED_MAC_FILE="$HOME/.config/claude-usage-monitor/ble-address"
 CONFIG_FILE="$HOME/.config/claude-usage-monitor/config"
+LATEST_FILE="$HOME/.config/claude-usage-monitor/latest.json"   # mirror of the last payload (sim live mode)
 REFRESH_FLAG="/tmp/claude-usage-refresh-$$"
 DBUS_DEST="org.bluez"
 NOTIFY_PID=""
@@ -544,6 +545,14 @@ _payload_session_pct() {
 # (recent API activity); a rise stamps LAST_ACTIVE so the choice is sticky and
 # survives window resets (a drop to 0 isn't activity). Before any rise is seen
 # (startup), fall back to the plan with the highest current session %.
+# Mirror a payload to $LATEST_FILE (atomic rename) for the desktop simulator's
+# live mode. Best-effort — never affects the device path.
+write_latest() {
+    mkdir -p "$(dirname "$LATEST_FILE")" 2>/dev/null || return 0
+    printf '%s\n' "$1" > "$LATEST_FILE.tmp" 2>/dev/null && mv -f "$LATEST_FILE.tmp" "$LATEST_FILE" 2>/dev/null
+    return 0
+}
+
 poll() {
     POLL_SEQ=$((POLL_SEQ + 1))
 
@@ -590,6 +599,7 @@ poll() {
         log "Active plan: $best_dir (s=$best_s)"
     fi
     log "Sending: ${cycle_payload[$best_dir]}"
+    write_latest "${cycle_payload[$best_dir]}"
     write_gatt "$RX_CHAR_PATH" "${cycle_payload[$best_dir]}" || { log "Write failed"; return 1; }
     return 0
 }

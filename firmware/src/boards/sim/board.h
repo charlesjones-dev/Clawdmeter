@@ -33,6 +33,11 @@
 //
 // Headless QA: SIM_BOOT_SCREEN=usage skips the splash at boot so SIM_AUTOSHOT_MS
 // captures the usage view without a button press or a main.cpp edit.
+//
+// Live mode: SIM_MODE=live follows the daemon's latest.json mirror
+// (~/.config/claude-usage-monitor/latest.json, override with SIM_LIVE_FILE)
+// instead of the scenario — the window shows what the board shows.
+// SIM_ALWAYS_ON_TOP=1 keeps the window above others. `./sim.sh` sets these.
 
 #define BOARD_NAME  "Simulator"
 #ifndef LCD_WIDTH

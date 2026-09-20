@@ -45,6 +45,8 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 # Optional clock display. 
 # Config lives under the same Clawdmeter dir as daemon.log.
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
+# Latest payload, mirrored to disk on every send (desktop simulator live mode).
+LATEST_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "latest.json"
 
 API_URL = "https://api.anthropic.com/v1/messages"
 # Primary source: the OAuth usage endpoint Claude Code's /usage screen reads. One
@@ -400,6 +402,18 @@ async def _fetch_usage_json(http, headers: dict) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def write_latest(payload: dict) -> None:
+    """Mirror the payload to LATEST_FILE (atomic rename) for the desktop sim's
+    live mode. Best-effort: a failure here must never affect the device path."""
+    try:
+        LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LATEST_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+        os.replace(tmp, LATEST_FILE)
+    except OSError as e:
+        log(f"Could not write {LATEST_FILE}: {e}")
+
+
 async def poll_api(token: str) -> dict | None:
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
@@ -624,6 +638,7 @@ class Session:
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
         log(f"Sending: {data.decode()}")
+        write_latest(payload)   # the sim's live view follows whatever the device gets
         try:
             await self.client.write_gatt_char(RX_CHAR_UUID, data, response=False)
             return True

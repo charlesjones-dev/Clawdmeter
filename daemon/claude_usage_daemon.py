@@ -39,6 +39,9 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 DEFAULT_CONFIG_DIR = Path.home() / ".claude"
 SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-address"
 CONFIG_FILE = Path.home() / ".config" / "claude-usage-monitor" / "config"
+# Latest payload, mirrored to disk on every send (and on headless polls when
+# no device is reachable) so the desktop simulator can show live data.
+LATEST_FILE = Path.home() / ".config" / "claude-usage-monitor" / "latest.json"
 
 API_URL = "https://api.anthropic.com/v1/messages"
 # Primary source: the OAuth usage endpoint Claude Code's /usage screen reads. One
@@ -674,6 +677,18 @@ async def _fetch_usage_json(http, headers: dict) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def write_latest(payload: dict) -> None:
+    """Mirror the payload to LATEST_FILE (atomic rename) for the desktop sim's
+    live mode. Best-effort: a failure here must never affect the device path."""
+    try:
+        LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LATEST_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+        os.replace(tmp, LATEST_FILE)
+    except OSError as e:
+        log(f"Could not write {LATEST_FILE}: {e}")
+
+
 async def poll_api(token: str) -> dict | None:
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
@@ -904,6 +919,7 @@ class Session:
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
         log(f"Sending: {data.decode()}")
+        write_latest(payload)   # the sim's live view follows whatever the device gets
         try:
             await self.client.write_gatt_char(RX_CHAR_UUID, data, response=False)
             return True
@@ -1083,6 +1099,26 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     return used_successfully
 
 
+class HeadlessPoller:
+    """Polls at POLL_INTERVAL while no device is connected and mirrors the result
+    to LATEST_FILE, so the desktop simulator's live mode works with the board
+    off or out of range. Same free-ride token rules as the device path."""
+
+    def __init__(self) -> None:
+        self.last = 0.0
+
+    async def tick(self) -> None:
+        if time.time() - self.last < POLL_INTERVAL:
+            return
+        self.last = time.time()
+        payload, dead = await poll_active()
+        if payload is not None:
+            log(f"No device; mirrored poll to {LATEST_FILE.name}")
+            write_latest(payload)
+        elif dead:
+            write_latest({"ok": False})
+
+
 async def main() -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -1102,12 +1138,14 @@ async def main() -> None:
 
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
+    headless = HeadlessPoller()   # keeps latest.json fresh for the sim with no device
     while not stop_event.is_set():
         # Apply any pending skip exactly once, then clear it so the next
         # cycle re-tries retrieveConnected (the device may have recovered).
         target = await discover_target(skip_addr=skip_addr)
         skip_addr = None
         if not target:
+            await headless.tick()
             log(f"Device not found, retrying in {backoff}s...")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=backoff)
@@ -1126,6 +1164,7 @@ async def main() -> None:
             else:
                 log("Invalidating cached address")
                 SAVED_ADDR_FILE.unlink(missing_ok=True)
+            await headless.tick()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=backoff)
             except asyncio.TimeoutError:

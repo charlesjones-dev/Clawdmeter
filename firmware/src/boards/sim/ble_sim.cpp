@@ -1,7 +1,13 @@
-// BLE stub + scenario playback. Implements ble.h without any transport: a
-// JSONL scenario file stands in for the daemon, delivered through the same
-// ble_has_data()/ble_get_data() path main.cpp uses on hardware — so JSON
-// parsing, usage-rate tracking, and the chime trigger all run for real.
+// BLE stub with two data sources. Implements ble.h without any transport,
+// delivering payloads through the same ble_has_data()/ble_get_data() path
+// main.cpp uses on hardware — so JSON parsing, usage-rate tracking, and the
+// chime trigger all run for real.
+//
+//   scenario (default) — plays sim/scenario.jsonl in a loop (UI iteration, CI).
+//   live (SIM_MODE=live) — follows the daemon's latest.json mirror
+//     (~/.config/claude-usage-monitor/latest.json, or SIM_LIVE_FILE), so the
+//     window shows the same numbers the board does. Playback keys are inert;
+//     `d` still toggles the link for testing the pairing screen.
 #include "../../ble.h"
 #include "sim_platform.h"
 #include <Arduino.h>
@@ -9,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <sys/stat.h>
 
 #define MAX_STATES 64
 #define MAX_LINE   512
@@ -26,6 +34,16 @@ static bool     playing = true;
 static bool     connected = true;
 static bool     pending = false;      // a state is queued for main's next poll
 static uint32_t delivered_ms = 0;
+
+// ---- Live mode ----
+static bool     live = false;
+static char     live_path[512];
+static time_t   live_mtime = 0;       // mtime of the last delivered file
+static uint32_t live_check_ms = 0;
+static char     live_json[MAX_LINE];
+static char     live_stamp[16];       // "HH:MM:SS" of the last delivery, for the title
+#define LIVE_POLL_MS   1000
+#define LIVE_STALE_S   180            // ignore a mirror older than this at startup
 
 static const char* FALLBACK[] = {
     "{\"name\":\"fresh\",\"s\":3.0,\"sr\":295,\"w\":12.0,\"wr\":9000,\"st\":\"allowed\",\"ok\":true}",
@@ -77,21 +95,77 @@ static void load_scenario(void) {
 }
 
 static void refresh_title(void) {
-    char t[96];
-    snprintf(t, sizeof(t), "Clawdmeter sim — %s[%d/%d] %s %s",
-             connected ? "" : "(disconnected) ",
-             cur + 1, n_states, states[cur].name,
-             playing ? "\xE2\x96\xB6" : "\xE2\x8F\xB8");
+    char t[128];
+    if (live) {
+        snprintf(t, sizeof(t), "Clawdmeter — live%s%s%s",
+                 connected ? "" : " (link off)",
+                 live_stamp[0] ? " · updated " : " · waiting for daemon",
+                 live_stamp);
+    } else {
+        snprintf(t, sizeof(t), "Clawdmeter sim — %s[%d/%d] %s %s",
+                 connected ? "" : "(disconnected) ",
+                 cur + 1, n_states, states[cur].name,
+                 playing ? "\xE2\x96\xB6" : "\xE2\x8F\xB8");
+    }
     sim_display_set_title(t);
 }
 
+// Read the mirror file into live_json when its mtime moves. At startup a stale
+// mirror (daemon not running for a while) is skipped so hours-old numbers are
+// never rendered as live; the firmware's own idle logic then shows "No data".
+static void live_poll(void) {
+    struct stat st;
+    if (stat(live_path, &st) != 0) return;
+    if (st.st_mtime == live_mtime) return;
+    if (live_mtime == 0 && time(NULL) - st.st_mtime > LIVE_STALE_S) {
+        live_mtime = st.st_mtime;   // remember it, but don't deliver
+        printf("[sim] live: %s is %lds old — waiting for a fresh write\n",
+               live_path, (long)(time(NULL) - st.st_mtime));
+        return;
+    }
+    FILE* f = fopen(live_path, "r");
+    if (!f) return;
+    size_t n = fread(live_json, 1, sizeof(live_json) - 1, f);
+    fclose(f);
+    live_json[n] = 0;
+    while (n && (live_json[n - 1] == '\n' || live_json[n - 1] == '\r')) live_json[--n] = 0;
+    if (!n) return;
+    live_mtime = st.st_mtime;
+    struct tm tmv; time_t now = time(NULL); localtime_r(&now, &tmv);
+    strftime(live_stamp, sizeof(live_stamp), "%H:%M:%S", &tmv);
+    pending = true;
+    refresh_title();
+}
+
 void ble_init(void) {
+    const char* mode = getenv("SIM_MODE");
+    live = mode && strcmp(mode, "live") == 0;
+    if (live) {
+        const char* f = getenv("SIM_LIVE_FILE");
+        if (f && *f) snprintf(live_path, sizeof(live_path), "%s", f);
+        else {
+            const char* home = getenv("HOME");
+            snprintf(live_path, sizeof(live_path), "%s/.config/claude-usage-monitor/latest.json",
+                     home ? home : ".");
+        }
+        live_stamp[0] = 0;
+        printf("[sim] live mode: following %s\n", live_path);
+        refresh_title();
+        return;
+    }
     load_scenario();
     pending = true;
     refresh_title();
 }
 
 void ble_tick(void) {
+    if (live) {
+        if (connected && !pending && millis() - live_check_ms >= LIVE_POLL_MS) {
+            live_check_ms = millis();
+            live_poll();
+        }
+        return;
+    }
     if (!connected || pending || !playing || n_states == 0) return;
     if (millis() - delivered_ms >= states[cur].hold_ms) {
         cur = (cur + 1) % n_states;
@@ -113,7 +187,7 @@ bool ble_has_data(void) { return connected && pending; }
 const char* ble_get_data(void) {
     pending = false;
     delivered_ms = millis();
-    return states[cur].json;
+    return live ? live_json : states[cur].json;
 }
 void ble_send_ack(void)  {}
 void ble_send_nack(void) { printf("[sim] payload NACKed — check the scenario JSON\n"); }
@@ -127,19 +201,20 @@ void ble_keyboard_release(void) { printf("[sim] HID release\n"); }
 
 // ---- Playback controls (called from the sim_platform event pump) ----
 void sim_playback_toggle(void) {
+    if (live) return;   // nothing to play in live mode
     playing = !playing;
     delivered_ms = millis();   // restart the hold timer on resume
     refresh_title();
 }
 void sim_playback_step(int dir) {
-    if (!n_states) return;
+    if (live || !n_states) return;
     playing = false;
     cur = (cur + dir + n_states) % n_states;
     pending = true;
     refresh_title();
 }
 void sim_playback_jump(int idx) {
-    if (idx < 0 || idx >= n_states) return;
+    if (live || idx < 0 || idx >= n_states) return;
     playing = false;
     cur = idx;
     pending = true;

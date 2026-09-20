@@ -29,9 +29,13 @@ void display_hal_init(void) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         exit(1);
     }
+    // SIM_ALWAYS_ON_TOP=1 keeps the window above others — handy when the sim
+    // is used as a live desk widget rather than a dev tool.
+    const char* top = getenv("SIM_ALWAYS_ON_TOP");
+    Uint32 flags = (top && *top && strcmp(top, "0") != 0) ? SDL_WINDOW_ALWAYS_ON_TOP : 0;
     win = SDL_CreateWindow("Clawdmeter sim",
                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           LCD_WIDTH, LCD_HEIGHT, 0);
+                           LCD_WIDTH, LCD_HEIGHT, flags);
     ren = SDL_CreateRenderer(win, -1, 0);
     if (!win || !ren) {
         fprintf(stderr, "SDL window/renderer failed: %s\n", SDL_GetError());
