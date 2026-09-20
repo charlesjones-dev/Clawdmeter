@@ -225,10 +225,13 @@ The device advertises a custom GATT service alongside the standard HID keyboard 
 JSON payload format (written to RX):
 
 ```json
-{ "s": 45, "sr": 120, "w": 28, "wr": 7200, "st": "allowed", "ok": true }
+{ "s": 45, "sr": 120, "w": 28, "wr": 7200, "m": 61, "mr": 7200, "ml": "Fable", "st": "allowed", "ok": true }
 ```
 
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
+Optional: `m` / `mr` / `ml` = a model-scoped weekly window (utilization %, reset minutes, server label — Fable today). When present the device shows a third row; older daemons never send it and the two-row layout is unchanged.
+
+The daemons read these from `GET https://api.anthropic.com/api/oauth/usage` (the same endpoint Claude Code's `/usage` screen uses — one free call, no inference). Enterprise accounts have no 5h window there, so they fall back to the rate-limit headers of a minimal `/v1/messages` probe, as before.
 
 ## Development
 

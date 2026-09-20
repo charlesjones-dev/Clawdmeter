@@ -2,7 +2,7 @@
 # Claude Usage Tracker Daemon (BLE)
 # Reads Claude Code OAuth token, polls usage via API, sends to ESP32 over BLE GATT.
 # Auto-connects and reconnects to the Clawdmeter BLE device.
-# Dependencies: curl, awk, bluetoothctl
+# Dependencies: curl, awk, python3, bluetoothctl
 
 DEVICE_NAME="Clawdmeter"
 DEVICE_MAC="${DEVICE_MAC:-}"  # auto-discovered if empty
@@ -278,6 +278,77 @@ write_gatt() {
 # Build the device payload for one OAuth token. Echoes the JSON payload on
 # success (empty + non-zero return on failure). Pure: no logging, no GATT write
 # — poll() owns picking the active plan and sending it.
+# --- OAuth usage endpoint (primary source) ----------------------------------
+# GET https://api.anthropic.com/api/oauth/usage is what Claude Code's own /usage
+# screen reads: 5h + 7d windows as 0-100 percentages with ISO reset times, plus a
+# `limits[]` array carrying per-model weekly windows (Fable today). Those never
+# appear in the rate-limit headers of a Haiku probe, so the headers can't feed a
+# third row. One free GET (no inference), same bearer token + oauth beta header.
+# The parser prints a payload *fragment* (`"s":..,"sr":..,...`) on stdout, or
+# exits 1 when the body has no 5h window (Enterprise) so the caller falls back
+# to the header probe below.
+read -r -d '' USAGE_PY <<'PYEOF'
+import sys, json, datetime
+now = float(sys.argv[1])
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+
+def pct(v):
+    return int(round(float(v))) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+def mins(iso):
+    if not isinstance(iso, str) or not iso.strip():
+        return 0
+    v = iso.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(v)
+    except ValueError:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    m = (dt.timestamp() - now) / 60.0
+    return int(round(m)) if m > 0 else 0
+
+fh = d.get("five_hour")
+s = pct(fh.get("utilization")) if isinstance(fh, dict) else None
+if s is None:
+    sys.exit(1)          # no 5h window -> Enterprise / unknown shape -> header probe
+sd = d.get("seven_day") if isinstance(d.get("seven_day"), dict) else {}
+w = pct(sd.get("utilization")) or 0
+frag = {"s": s, "sr": mins(fh.get("resets_at")), "w": w, "wr": mins(sd.get("resets_at")),
+        "st": "allowed" if s < 100 else "rejected", "acct": "pro"}
+for row in d.get("limits") or []:
+    if not isinstance(row, dict) or row.get("kind") != "weekly_scoped":
+        continue
+    model = ((row.get("scope") or {}).get("model") or {})
+    name = model.get("display_name") if isinstance(model, dict) else None
+    p = pct(row.get("percent"))
+    if isinstance(name, str) and name.strip() and p is not None:
+        frag["m"], frag["mr"], frag["ml"] = p, mins(row.get("resets_at")), name.strip()[:15]
+        break
+print(json.dumps(frag, separators=(",", ":"))[1:-1])   # strip braces -> fragment
+PYEOF
+
+fetch_usage_fragment() {
+    local token="$1" out code body
+    out=$(curl -s -m 15 -w $'\n%{http_code}' \
+        "https://api.anthropic.com/api/oauth/usage" \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: claude-code/2.1.5" 2>/dev/null) || return 1
+    code=${out##*$'\n'}
+    body=${out%$'\n'*}
+    [ "$code" = "200" ] || return 1
+    printf '%s' "$body" | python3 -c "$USAGE_PY" "$(date +%s)"
+}
+
 build_payload_for_token() {
     local token="$1"
     [ -z "$token" ] && return 1
@@ -302,6 +373,20 @@ build_payload_for_token() {
         clock_fragment=",\"t\":$local_epoch,\"tf\":$tf"
     fi
 
+    # Optional reset chime. When enabled, tell the firmware it may sound the
+    # session-reset chime by adding "c":1 to the payload (additive, off by default).
+    local chime chime_fragment=""
+    chime=$(read_chime_setting)
+    [ "$chime" = "on" ] && chime_fragment=",\"c\":1"
+
+    # Primary: OAuth usage endpoint (Pro/Max — includes the per-model weekly row).
+    local usage_frag
+    if usage_frag=$(fetch_usage_fragment "$token") && [ -n "$usage_frag" ]; then
+        printf '{%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment"
+        return 0
+    fi
+
+    # Fallback / Enterprise: probe the messages API for its rate-limit headers.
     local headers
     headers=$(curl -s -D - -o /dev/null \
         "https://api.anthropic.com/v1/messages" \
@@ -319,12 +404,6 @@ build_payload_for_token() {
     overage_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-overage-reset" | tr -d '\r' | awk '{print $2}')
     status=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-status" | tr -d '\r' | awk '{print $2}')
     status=${status:-unknown}
-
-    # Optional reset chime. When enabled, tell the firmware it may sound the
-    # session-reset chime by adding "c":1 to the payload (additive, off by default).
-    local chime chime_fragment=""
-    chime=$(read_chime_setting)
-    [ "$chime" = "on" ] && chime_fragment=",\"c\":1"
 
     local payload
     if [ -n "$s5h_util" ]; then

@@ -2,6 +2,8 @@
 #include <SDL.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <string.h>
+#include "../../ui.h"
 
 static bool quit = false;
 
@@ -59,6 +61,18 @@ void sim_pump(void) {
     if (pwr_down && !pwr_long_fired && millis() - pwr_down_ms >= PWR_LONG_MS) {
         pwr_long_fired = true;
         edge_long = true;
+    }
+
+    // Headless QA hook: SIM_BOOT_SCREEN=usage → leave the splash immediately so an
+    // autoshot captures the usage view (no button press / main.cpp edit needed).
+    static int boot_usage = -1;   // -1 unchecked, 1 pending, 0 done/off
+    if (boot_usage == -1) {
+        const char* v = getenv("SIM_BOOT_SCREEN");
+        boot_usage = (v && strcmp(v, "usage") == 0) ? 1 : 0;
+    }
+    if (boot_usage == 1 && ui_get_current_screen() == SCREEN_SPLASH) {
+        ui_toggle_splash();
+        boot_usage = 0;
     }
 
     // Headless CI hook: SIM_AUTOSHOT_MS=<ms> → screenshot + exit.

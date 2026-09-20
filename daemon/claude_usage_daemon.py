@@ -41,6 +41,11 @@ SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-addres
 CONFIG_FILE = Path.home() / ".config" / "claude-usage-monitor" / "config"
 
 API_URL = "https://api.anthropic.com/v1/messages"
+# Primary source: the OAuth usage endpoint Claude Code's /usage screen reads. One
+# GET returns the 5h/7d windows plus a `limits[]` array that carries the per-model
+# weekly window (Fable today) — the row the rate-limit headers never expose on a
+# Haiku probe. Free (no inference), same bearer token + oauth beta header.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 API_HEADERS_TEMPLATE = {
     "anthropic-version": "2023-06-01",
     "anthropic-beta": "oauth-2025-04-20",
@@ -457,11 +462,141 @@ def add_clock_fields(payload: dict) -> None:
     payload["tf"] = tf
 
 
+_NOTED: set = set()
+
+
+def _log_once(key: str, msg: str) -> None:
+    """Log a steady-state condition once per process instead of every poll."""
+    if key not in _NOTED:
+        _NOTED.add(key)
+        log(msg)
+
+
+def _iso_to_epoch(value) -> float | None:
+    """ISO-8601 timestamp (as the usage endpoint emits) -> epoch seconds, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def _minutes_until(epoch: float | None, now: float) -> int:
+    if epoch is None:
+        return 0
+    mins = (epoch - now) / 60.0
+    return int(round(mins)) if mins > 0 else 0
+
+
+def _pct_int(value) -> int | None:
+    """0-100 percentage as the endpoint reports it -> rounded int, or None if absent."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(round(float(value)))
+
+
+def _scoped_weekly_window(limits) -> tuple[str, int, float | None] | None:
+    """First model-scoped weekly row of `limits[]`: (display_name, percent, reset_epoch).
+
+    Mirrors Claude Code's own projection (`kind == "weekly_scoped"` with a model
+    scope -> its `rate_limits.model_scoped[]`). The label comes from the server so
+    the firmware never hardcodes a model name; clipped to the device's 15-char
+    label buffer.
+    """
+    if not isinstance(limits, list):
+        return None
+    for row in limits:
+        if not isinstance(row, dict) or row.get("kind") != "weekly_scoped":
+            continue
+        scope = row.get("scope") or {}
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = model.get("display_name") if isinstance(model, dict) else None
+        pct = _pct_int(row.get("percent"))
+        if isinstance(name, str) and name.strip() and pct is not None:
+            return name.strip()[:15], pct, _iso_to_epoch(row.get("resets_at"))
+    return None
+
+
+def _payload_from_usage_json(data, now: float) -> dict | None:
+    """Pro/Max payload from a GET /api/oauth/usage body.
+
+    Returns None when the body carries no 5h window (Enterprise spend-limit
+    accounts, or an unexpected shape) so the caller falls back to the
+    rate-limit-header probe, which still owns the Enterprise path.
+    """
+    if not isinstance(data, dict):
+        return None
+    fh = data.get("five_hour")
+    if not isinstance(fh, dict):
+        return None
+    s = _pct_int(fh.get("utilization"))
+    if s is None:
+        return None
+    sd = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else {}
+    w = _pct_int(sd.get("utilization")) or 0
+    payload = {
+        "s": s,
+        "sr": _minutes_until(_iso_to_epoch(fh.get("resets_at")), now),
+        "w": w,
+        "wr": _minutes_until(_iso_to_epoch(sd.get("resets_at")), now),
+        # The headers' 5h-status has no JSON twin; derive the same vocabulary
+        # from the window itself (the firmware stores but never renders it).
+        "st": "allowed" if s < 100 else "rejected",
+        "acct": "pro",
+        "ok": True,
+    }
+    scoped = _scoped_weekly_window(data.get("limits"))
+    if scoped is not None:
+        name, pct, reset_epoch = scoped
+        payload["m"] = pct                                # model-scoped weekly %
+        payload["mr"] = _minutes_until(reset_epoch, now)  # ...its reset, minutes
+        payload["ml"] = name                              # ...its label ("Fable")
+    return payload
+
+
+async def _fetch_usage_json(http, headers: dict) -> dict | None:
+    """GET the OAuth usage endpoint. Any failure -> None so the caller falls back
+    to the header probe; auth errors are left to the probe, which owns that call
+    (a token lacking the user:profile scope must not read as "expired")."""
+    try:
+        resp = await http.get(USAGE_URL, headers=headers)
+    except httpx.HTTPError as e:
+        log(f"Usage endpoint failed: {e}; falling back to rate-limit headers")
+        return None
+    if resp.status_code != 200:
+        log(f"Usage endpoint HTTP {resp.status_code}; falling back to rate-limit headers")
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        log("Usage endpoint returned non-JSON; falling back to rate-limit headers")
+        return None
+    return data if isinstance(data, dict) else None
+
+
 async def poll_api(token: str) -> dict | None:
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=20.0) as http:
+            # Primary: the OAuth usage endpoint (5h/7d + per-model weekly rows).
+            usage = await _fetch_usage_json(http, headers)
+            if usage is not None:
+                payload = _payload_from_usage_json(usage, time.time())
+                if payload is not None:
+                    add_chime_field(payload)   # adds "c":1 iff the config opts in
+                    add_clock_fields(payload)  # adds "t" + "tf" iff the config opts in
+                    return payload
+                _log_once("usage-no-5h", "Usage endpoint has no 5h window (Enterprise?); "
+                                         "using rate-limit headers")
+            # Fallback / Enterprise: probe the messages API for its rate-limit headers.
             resp = await http.post(API_URL, headers=headers, json=API_BODY)
     except httpx.HTTPError as e:
         log(f"API call failed: {e}")

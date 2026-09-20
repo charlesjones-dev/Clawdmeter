@@ -45,6 +45,10 @@ daemon payload plus two optional keys:
 - `"name"` — shown in the window title
 - `"hold_ms"` — time on this state (default 3000)
 
+Quota payloads with `"m"`/`"mr"`/`"ml"` (a model-scoped weekly window, e.g.
+Fable) switch the usage view to its three-row layout; without them it stays
+on two rows. The default scenario has states for both.
+
 Lines starting with `#` are comments. Lines containing an `"ss"` array are
 **session payloads** (issue #135 wire format) and go out on the session
 characteristic path; everything else is a quota payload.
@@ -70,7 +74,21 @@ SDL_VIDEODRIVER=dummy SIM_AUTOSHOT_MS=6000 .pio/build/sim/program
 
 Saves `sim-autoshot.bmp` (override with `SIM_AUTOSHOT_PATH`) after the given
 delay and exits. Combine with `SIM_SCENARIO` pointing at a single-state file
-to capture any specific screen.
+to capture any specific screen. The sim boots on the splash like hardware;
+add `SIM_BOOT_SCREEN=usage` to jump straight to the usage view so the
+screenshot shows the panels without a button press or a `main.cpp` edit.
+
+## Other panel sizes
+
+The sim defaults to the 480×480 geometry. To check the compact (368×448) or
+small (240×240) layout breakpoints without hardware, override the panel size
+at build time (this rebuilds the `sim` env in place; build again without the
+override to return to 480):
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=368 -DLCD_HEIGHT=448" pio run -d firmware -e sim
+PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=240 -DLCD_HEIGHT=240" pio run -d firmware -e sim
+```
 
 ## Caveat
 

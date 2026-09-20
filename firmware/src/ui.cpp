@@ -24,6 +24,27 @@ LV_FONT_DECLARE(font_mono_18);
 // in ui_init() and treated as const for the rest of the program. Adding a
 // new display size means extending compute_layout() with another
 // breakpoint — never editing the screen-builder functions below.
+// Metrics for one usage row. The two-row layout is the classic stacked panel
+// (number / bar / "Resets in…" line). The three-row layout — used when the
+// daemon reports a model-scoped weekly window (Fable today) — moves the reset
+// text up beside the pill so the big number survives and three panels fit
+// above a smaller status line. Picked per breakpoint in compute_layout().
+enum { RESET_FULL = 0, RESET_SHORT = 1, RESET_BARE = 2 };
+struct RowStyle {
+    int16_t panel_h;
+    int16_t gap;                     // vertical gap to the next panel
+    int16_t pad_y;                   // panel top/bottom padding
+    int16_t bar_y, bar_h;
+    int16_t reset_y;                 // stacked layout only (ignored when inline_reset)
+    bool    inline_reset;            // reset text sits left of the pill on the number line
+    uint8_t reset_style;             // RESET_FULL "Resets in 4d 5h" / RESET_SHORT "Resets 4d 5h" / RESET_BARE "4d 5h"
+    const lv_font_t* pct_font;
+    const lv_font_t* pill_font;
+    const lv_font_t* reset_font;
+    const lv_font_t* anim_font;      // status line font while this layout is active
+    int16_t anim_y;                  // status line offset from bottom
+};
+
 struct Layout {
     int16_t scr_w, scr_h;
     int16_t margin;
@@ -56,6 +77,10 @@ struct Layout {
     // Pairing hint / idle screen
     int16_t pair_y1, pair_y2, pair_y3;
     int16_t idle_px;                 // sleeping-creature size on the idle screen
+
+    // Usage rows: rows2 mirrors the classic fields above; rows3 is the
+    // compact variant that makes room for the model-scoped weekly panel.
+    RowStyle rows2, rows3;
 
     // Bluetooth screen
     int16_t bt_info_panel_h;
@@ -117,6 +142,11 @@ static void compute_layout(const BoardCaps& c) {
         L.bt_device_font   = &font_styrene_28;
         L.bt_credit_1_font = &font_styrene_24;
         L.bt_credit_2_font = &font_styrene_20;
+        // Three rows: 100 + 3×104 + 2×10 = 432, status line (mono 18) below.
+        // Short reset form: "100%" + "Resets in 23h 59m" + pill overruns 408px.
+        L.rows3 = { 104, 10, 12, 64, 16, 0, true, RESET_SHORT,
+                    &font_styrene_48, &font_styrene_20, &font_styrene_20,
+                    &font_mono_18, -8 };
     } else if (c.height >= 300) {
         // Compact layout — tuned for 368x448 (AMOLED-1.8).
         L.content_y = 85;
@@ -131,6 +161,12 @@ static void compute_layout(const BoardCaps& c) {
         L.bt_device_font   = &font_styrene_20;
         L.bt_credit_1_font = &font_styrene_16;
         L.bt_credit_2_font = &font_styrene_14;
+        // Three rows: 85 + 3×92 + 2×10 = 381. The 296px inner width can't take a
+        // 48px number plus "Resets in 23h 59m" plus a pill, so step the number
+        // down and use the short reset form.
+        L.rows3 = { 92, 10, 12, 50, 14, 0, true, RESET_SHORT,
+                    &font_styrene_28, &font_styrene_16, &font_styrene_14,
+                    &font_mono_18, -10 };
     } else {
         // Small layout — tuned for 240x240 (LCD-1.54 and similar square TFTs).
         // Everything shrinks: fonts two steps down, panels ~half height, and
@@ -173,9 +209,20 @@ static void compute_layout(const BoardCaps& c) {
         L.bt_device_font   = &font_styrene_14;
         L.bt_credit_1_font = &font_styrene_12;
         L.bt_credit_2_font = &font_styrene_12;
+        // Three rows: 44 + 3×50 + 2×6 = 206, status line (mono 18) in the strip below.
+        // 204px inner width: bare reset ("23h 59m") — the pill already names the window.
+        L.rows3 = { 50, 6, 6, 32, 8, 0, true, RESET_BARE,
+                    &font_styrene_20, &font_styrene_12, &font_styrene_12,
+                    &font_mono_18, -4 };
     }
 
     L.content_w = L.scr_w - 2 * L.margin;
+
+    // The classic two-row panel, expressed as a RowStyle so both layouts share
+    // one builder. Enterprise accounts always render with this one.
+    L.rows2 = { L.usage_panel_h, L.usage_panel_gap, L.panel_pad_y,
+                L.usage_bar_y, L.bar_h, L.usage_reset_y, false, RESET_FULL,
+                L.pct_font, L.pill_font, L.reset_font, L.anim_font, L.anim_y };
 }
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -199,7 +246,8 @@ static long     clock_base_epoch = 0;
 static uint32_t clock_base_ms = 0;
 static int      clock_fmt = 24;   // 12 or 24, set from the daemon payload
 static int      clock_last_min = -1;   // last rendered minute; avoids redrawing the title every tick
-static lv_obj_t* usage_group;   // the two usage panels — shown when connected
+static lv_obj_t* usage_group;   // the usage panels (2 or 3 rows) — shown when connected
+static int       usage_rows = 0; // rows currently built inside usage_group (0 = none yet)
 static lv_obj_t* pair_group;    // pairing hint — shown when disconnected
 static lv_obj_t* bar_session;
 static lv_obj_t* lbl_session_pct;
@@ -211,6 +259,13 @@ static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
 static lv_obj_t* panel_session = nullptr;
 static lv_obj_t* panel_weekly = nullptr;
+// Third row — model-scoped weekly window (e.g. Fable). Only exists in the
+// three-row layout; nullptr otherwise.
+static lv_obj_t* panel_scoped = nullptr;
+static lv_obj_t* bar_scoped = nullptr;
+static lv_obj_t* lbl_scoped_pct = nullptr;
+static lv_obj_t* lbl_scoped_label = nullptr;
+static lv_obj_t* lbl_scoped_reset = nullptr;
 // Enterprise-only widgets inside panel_session
 static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
@@ -311,6 +366,29 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     }
 }
 
+// Row-aware variant: the three-row layout puts the reset text beside the pill,
+// so narrower panels drop "in" ("Resets 4d 5h") or the whole prefix ("4d 5h").
+static void format_reset_for_row(const RowStyle& rs, int mins, char* buf, size_t len) {
+    if (rs.reset_style == RESET_FULL) { format_reset_time(mins, buf, len); return; }
+    const char* pre = (rs.reset_style == RESET_SHORT) ? "Resets " : "";
+    if (mins < 0) {
+        snprintf(buf, len, "---");
+    } else if (mins < 60) {
+        snprintf(buf, len, "%s%dm", pre, mins);
+    } else if (mins < 1440) {
+        snprintf(buf, len, "%s%dh %dm", pre, mins / 60, mins % 60);
+    } else {
+        snprintf(buf, len, "%s%dd %dh", pre, mins / 1440, (mins % 1440) / 60);
+    }
+}
+
+// Inline reset text hangs off the left edge of its pill; re-run after either
+// label changes size (lv_obj_align_to is a one-shot placement).
+#define RESET_PILL_GAP 8
+static void place_inline_reset(lv_obj_t* reset, lv_obj_t* pill) {
+    lv_obj_align_to(reset, pill, LV_ALIGN_OUT_LEFT_MID, -RESET_PILL_GAP, 0);
+}
+
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
 
@@ -389,29 +467,94 @@ static void init_battery_icons(void) {
 // ======== Usage Screen ========
 
 static lv_obj_t* make_usage_panel(lv_obj_t* parent, int y, const char* pill_text,
+                                  const RowStyle& rs,
                                   lv_obj_t** out_pct, lv_obj_t** out_pill,
                                   lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, L.margin, y, L.content_w, L.usage_panel_h);
+    lv_obj_t* panel = make_panel(parent, L.margin, y, L.content_w, rs.panel_h);
+    lv_obj_set_style_pad_top(panel, rs.pad_y, 0);
+    lv_obj_set_style_pad_bottom(panel, rs.pad_y, 0);
 
     *out_pct = lv_label_create(panel);
     lv_label_set_text(*out_pct, "---%");
-    lv_obj_set_style_text_font(*out_pct, L.pct_font, 0);
+    lv_obj_set_style_text_font(*out_pct, rs.pct_font, 0);
     lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
     lv_obj_set_pos(*out_pct, 0, 0);
 
     *out_pill = make_pill(panel, pill_text);
+    lv_obj_set_style_text_font(*out_pill, rs.pill_font, 0);
     lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
-    *out_bar = make_bar(panel, 0, L.usage_bar_y,
-                        L.content_w - 2 * L.panel_pad_x, L.bar_h);
+    *out_bar = make_bar(panel, 0, rs.bar_y,
+                        L.content_w - 2 * L.panel_pad_x, rs.bar_h);
 
     *out_reset = lv_label_create(panel);
     lv_label_set_text(*out_reset, "---");
-    lv_obj_set_style_text_font(*out_reset, L.reset_font, 0);
+    lv_obj_set_style_text_font(*out_reset, rs.reset_font, 0);
     lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
-    lv_obj_set_pos(*out_reset, 0, L.usage_reset_y);
+    if (rs.inline_reset) place_inline_reset(*out_reset, *out_pill);
+    else                 lv_obj_set_pos(*out_reset, 0, rs.reset_y);
 
     return panel;
+}
+
+// (Re)build the usage panels inside usage_group for a two- or three-row layout.
+// Called once at init (2 rows) and again from ui_update() whenever the daemon
+// starts or stops sending a model-scoped window. Cheap: a dozen LVGL objects.
+static void build_usage_rows(int n) {
+    const RowStyle& rs = (n == 3) ? L.rows3 : L.rows2;
+    lv_obj_clean(usage_group);
+    panel_scoped = bar_scoped = lbl_scoped_pct = lbl_scoped_label = lbl_scoped_reset = nullptr;
+
+    int y = L.content_y;
+    panel_session = make_usage_panel(usage_group, y, "Current", rs,
+                     &lbl_session_pct, &lbl_session_label,
+                     &bar_session, &lbl_session_reset);
+
+    // Enterprise-only overlays inside panel_session — hidden until enterprise
+    // data arrives. Enterprise never has a scoped row, so these only ever show
+    // in the two-row layout and use its classic positions.
+    lbl_session_pct_sym = lv_label_create(panel_session);
+    lv_label_set_text(lbl_session_pct_sym, "%");
+    lv_obj_set_style_text_font(lbl_session_pct_sym, L.reset_font, 0);
+    lv_obj_set_style_text_color(lbl_session_pct_sym, COL_TEXT, 0);
+    lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
+
+    lbl_spending_desc = lv_label_create(panel_session);
+    lv_label_set_text(lbl_spending_desc, "of your monthly budget");
+    lv_obj_set_style_text_font(lbl_spending_desc, L.reset_font, 0);
+    lv_obj_set_style_text_color(lbl_spending_desc, COL_DIM, 0);
+    lv_obj_set_pos(lbl_spending_desc, 0, L.usage_reset_y);
+    lv_obj_add_flag(lbl_spending_desc, LV_OBJ_FLAG_HIDDEN);
+
+    lbl_spending_status = lv_label_create(panel_session);
+    lv_label_set_text(lbl_spending_status, "");
+    lv_obj_set_style_text_font(lbl_spending_status, L.pace_font, 0);
+    lv_obj_set_pos(lbl_spending_status, 0, L.usage_reset_y + 20);
+    lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
+
+    y += rs.panel_h + rs.gap;
+    panel_weekly = make_usage_panel(usage_group, y, "Weekly", rs,
+                     &lbl_weekly_pct, &lbl_weekly_label,
+                     &bar_weekly, &lbl_weekly_reset);
+    // Recolor enabled so enterprise period box can color pace and reset separately
+    lv_label_set_recolor(lbl_weekly_reset, true);
+
+    if (n == 3) {
+        y += rs.panel_h + rs.gap;
+        // Pill text is a placeholder; ui_update() writes the server's label.
+        panel_scoped = make_usage_panel(usage_group, y, "Model", rs,
+                         &lbl_scoped_pct, &lbl_scoped_label,
+                         &bar_scoped, &lbl_scoped_reset);
+    }
+    usage_rows = n;
+    Serial.printf("UI: usage panels rebuilt as %d rows\n", n);   // hardware QA breadcrumb (C6 has no screenshot)
+
+    // The status line shares the screen with the panels: smaller and tighter
+    // to the bottom edge when three rows are up.
+    if (lbl_anim) {
+        lv_obj_set_style_text_font(lbl_anim, rs.anim_font, 0);
+        lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, rs.anim_y);
+    }
 }
 
 // Pairing hint — shown when disconnected so the screen isn't empty and the
@@ -498,36 +641,7 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(usage_group, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    panel_session = make_usage_panel(usage_group, L.content_y, "Current",
-                     &lbl_session_pct, &lbl_session_label,
-                     &bar_session, &lbl_session_reset);
-
-    // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
-    lbl_session_pct_sym = lv_label_create(panel_session);
-    lv_label_set_text(lbl_session_pct_sym, "%");
-    lv_obj_set_style_text_font(lbl_session_pct_sym, L.reset_font, 0);
-    lv_obj_set_style_text_color(lbl_session_pct_sym, COL_TEXT, 0);
-    lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
-
-    lbl_spending_desc = lv_label_create(panel_session);
-    lv_label_set_text(lbl_spending_desc, "of your monthly budget");
-    lv_obj_set_style_text_font(lbl_spending_desc, L.reset_font, 0);
-    lv_obj_set_style_text_color(lbl_spending_desc, COL_DIM, 0);
-    lv_obj_set_pos(lbl_spending_desc, 0, L.usage_reset_y);
-    lv_obj_add_flag(lbl_spending_desc, LV_OBJ_FLAG_HIDDEN);
-
-    lbl_spending_status = lv_label_create(panel_session);
-    lv_label_set_text(lbl_spending_status, "");
-    lv_obj_set_style_text_font(lbl_spending_status, L.pace_font, 0);
-    lv_obj_set_pos(lbl_spending_status, 0, L.usage_reset_y + 20);
-    lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
-
-    panel_weekly = make_usage_panel(usage_group,
-                     L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
-                     &lbl_weekly_pct, &lbl_weekly_label,
-                     &bar_weekly, &lbl_weekly_reset);
-    // Recolor enabled so enterprise period box can color pace and reset separately
-    lv_label_set_recolor(lbl_weekly_reset, true);
+    build_usage_rows(2);   // classic layout until a payload says otherwise
 
     build_pair_group(usage_container);
     build_idle_group(usage_container);
@@ -609,6 +723,12 @@ void ui_update(const UsageData* data) {
 
     int s_pct = (int)(data->session_pct + 0.5f);
 
+    // Two rows normally; three when the daemon reports a model-scoped weekly
+    // window (Pro/Max only — Enterprise's spend model has no such row).
+    const int want_rows = (!data->enterprise && data->has_scoped) ? 3 : 2;
+    if (want_rows != usage_rows) build_usage_rows(want_rows);
+    const RowStyle& rs = (usage_rows == 3) ? L.rows3 : L.rows2;
+
     if (data->enterprise) {
         // Spending box: big number-only label + small "%" symbol + desc + pace
         lv_obj_set_style_text_font(lbl_session_pct, L.ent_pct_font, 0);
@@ -619,7 +739,7 @@ void ui_update(const UsageData* data) {
         lv_obj_add_flag(lbl_spending_status,   LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_set_style_text_font(lbl_session_pct, L.pct_font, 0);
+        lv_obj_set_style_text_font(lbl_session_pct, rs.pct_font, 0);
         lv_label_set_text(lbl_session_label, "Current");
         lv_obj_clear_flag(lbl_session_reset, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
@@ -646,8 +766,9 @@ void ui_update(const UsageData* data) {
                         LV_ALIGN_OUT_RIGHT_TOP, 4, 12);
     } else {
         lv_label_set_text_fmt(lbl_session_pct, "%d%%", s_pct);
-        format_reset_time(data->session_reset_mins, buf, sizeof(buf));
+        format_reset_for_row(rs, data->session_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_session_reset, buf);
+        if (rs.inline_reset) place_inline_reset(lbl_session_reset, lbl_session_label);
     }
 
     lv_bar_set_value(bar_session, s_pct, LV_ANIM_ON);
@@ -670,8 +791,23 @@ void ui_update(const UsageData* data) {
         lv_label_set_text_fmt(lbl_weekly_pct, "%d%%", w_pct);
         lv_bar_set_value(bar_weekly, w_pct, LV_ANIM_ON);
         lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
-        format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
+        format_reset_for_row(rs, data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
+        if (rs.inline_reset) place_inline_reset(lbl_weekly_reset, lbl_weekly_label);
+    }
+
+    // Third row: the model-scoped weekly window, labelled by the server
+    // ("Fable"). The label is set before the reset text is placed so the
+    // inline alignment sees the pill's final width.
+    if (panel_scoped) {
+        int m_pct = (int)(data->scoped_pct + 0.5f);
+        lv_label_set_text(lbl_scoped_label, data->scoped_label[0] ? data->scoped_label : "Model");
+        lv_label_set_text_fmt(lbl_scoped_pct, "%d%%", m_pct);
+        lv_bar_set_value(bar_scoped, m_pct, LV_ANIM_ON);
+        lv_obj_set_style_bg_color(bar_scoped, pct_color(data->scoped_pct), LV_PART_INDICATOR);
+        format_reset_for_row(rs, data->scoped_reset_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_scoped_reset, buf);
+        if (rs.inline_reset) place_inline_reset(lbl_scoped_reset, lbl_scoped_label);
     }
 }
 

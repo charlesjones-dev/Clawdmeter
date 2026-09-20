@@ -117,6 +117,12 @@ static bool parse_json(const char* json, UsageData* out) {
     out->time_pct = doc["tp"] | 0;
     out->period_days = doc["pd"] | 30;
     strlcpy(out->reset_date, doc["rd"] | "", sizeof(out->reset_date));
+    // Model-scoped weekly window (per-model cap, e.g. Fable). Additive: an old
+    // daemon never sends "m", and the UI keeps its two-row layout without it.
+    out->has_scoped = !doc["m"].isNull();
+    out->scoped_pct = doc["m"] | 0.0f;
+    out->scoped_reset_mins = doc["mr"] | -1;
+    strlcpy(out->scoped_label, doc["ml"] | "Model", sizeof(out->scoped_label));
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
     out->ok = doc["ok"] | false;

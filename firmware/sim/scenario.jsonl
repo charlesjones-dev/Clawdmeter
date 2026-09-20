@@ -7,5 +7,8 @@
 {"name":"maxed out","hold_ms":4000,"s":98.0,"sr":12,"w":88.0,"wr":5200,"st":"limited","ok":true}
 {"name":"session reset + chime","hold_ms":4000,"s":2.0,"sr":298,"w":88.0,"wr":5100,"st":"allowed","c":true,"ok":true}
 {"name":"weekly nearly gone","hold_ms":3000,"s":25.0,"sr":250,"w":96.0,"wr":300,"st":"allowed","ok":true}
+{"name":"fable row (3 rows)","hold_ms":4000,"s":4.0,"sr":180,"w":18.0,"wr":5900,"m":32,"mr":5900,"ml":"Fable","st":"allowed","ok":true}
+{"name":"fable hot, weekly cool","hold_ms":4000,"s":61.0,"sr":95,"w":22.0,"wr":4300,"m":87,"mr":4300,"ml":"Fable","st":"allowed","ok":true}
+{"name":"fable maxed","hold_ms":4000,"s":100.0,"sr":40,"w":100.0,"wr":30,"m":100,"mr":30,"ml":"Fable","st":"rejected","ok":true}
 {"name":"enterprise on pace","hold_ms":3000,"s":37.0,"sr":-1,"acct":"ent","tp":40,"pd":30,"rd":"Aug 15","st":"allowed","ok":true}
 {"name":"enterprise over pace","hold_ms":4000,"s":88.0,"sr":-1,"acct":"ent","tp":52,"pd":30,"rd":"Aug 15","st":"allowed","ok":true}

@@ -25,6 +25,19 @@
 // screenshot (SIM_AUTOSHOT_PATH, default sim-autoshot.bmp) after <ms> and
 // exits.
 
-#define BOARD_NAME  "Simulator 480x480"
+// Geometry defaults to the 480×480 AMOLED-2.16. Other breakpoints can be QA'd
+// without hardware by overriding at build time, e.g. the 1.8" or 1.54" panels:
+//   PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=368 -DLCD_HEIGHT=448" pio run -d firmware -e sim
+//   PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=240 -DLCD_HEIGHT=240" pio run -d firmware -e sim
+// (rebuilds the sim env in place; run without the override to go back to 480).
+//
+// Headless QA: SIM_BOOT_SCREEN=usage skips the splash at boot so SIM_AUTOSHOT_MS
+// captures the usage view without a button press or a main.cpp edit.
+
+#define BOARD_NAME  "Simulator"
+#ifndef LCD_WIDTH
 #define LCD_WIDTH   480
+#endif
+#ifndef LCD_HEIGHT
 #define LCD_HEIGHT  480
+#endif

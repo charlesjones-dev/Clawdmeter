@@ -154,8 +154,12 @@ s = screenshot BMP · esc = quit.
 
 Headless screenshots (works in CI, no display):
 `SDL_VIDEODRIVER=dummy SIM_AUTOSHOT_MS=6000 .pio/build/sim/program` saves
-`sim-autoshot.bmp` (or `SIM_AUTOSHOT_PATH`) after 6 s and exits. Combine with
-the boot-screen swap trick below to capture any screen. **The sim renders with
+`sim-autoshot.bmp` (or `SIM_AUTOSHOT_PATH`) after 6 s and exits. Add
+`SIM_BOOT_SCREEN=usage` to skip the splash (no `main.cpp` edit needed) and
+`SIM_SCENARIO=<single-state.jsonl>` to pin the payload. Other breakpoints:
+`PLATFORMIO_BUILD_FLAGS="-DLCD_WIDTH=368 -DLCD_HEIGHT=448" pio run -d firmware -e sim`
+(or 240/240) rebuilds the sim at that geometry; rebuild without the flags to
+return to 480. Convert with `sips -s format png` on macOS and Read the PNG. **The sim renders with
 desktop LVGL and fake data — always do a final check on real hardware before
 merging panel-related changes** (col offsets, rotation, rounding live in the
 hardware boards, not shared code).
@@ -179,7 +183,8 @@ The boot screen is `SCREEN_SPLASH` and only advances on a physical button press,
 9. **Per-board pre-init is `board_init()`.** Each board's `board_init.cpp` brings up `Wire` and any reset-gating IO expander BEFORE `display_hal_init()`. Skipping the IO expander release on AMOLED-1.8 leaves SH8601 + FT3168 in reset and they silently fail to probe. Same for LCD-4: expander @ 0x24 must run before `gfx->begin()` or the ST7701 stays dark.
 10. **No `#ifdef BOARD_*` in shared code.** The whole point of the refactor — if you're about to add one, you probably want a `BoardCaps` field or a per-board file instead. See `docs/porting/capability-flags.md`.
 11. **LCD-4 RGB bounce buffers.** `Arduino_RGB_Display` DMA-scans PSRAM. Pass `bounce_buffer_size_px = LCD_WIDTH * 10` so ESP-IDF allocates SRAM bounce buffers. Do not call `rgbpanel->getFrameBuffer()` after `gfx->begin()` — it constructs a second RGB panel and crashes.
-12. **LCD-4 has only one user button (GPIO 0 / BOOT).** GPIO 18 is display R3. KEY/PWR is EN/RST (hardware reset). Hold-to-pair and PWR-short animation/brightness cycling are unavailable; tap the panel to toggle splash ↔ usage.
+12. **Usage screen has two layouts, picked per payload.** `ui_update()` rebuilds the panel group (`build_usage_rows()`) as three rows when the daemon sends a model-scoped weekly window (`"m"`/`"mr"`/`"ml"`, Fable today) and two rows otherwise. Row metrics live in `RowStyle` (`L.rows2` / `L.rows3`) per breakpoint; the three-row variant puts the reset text inline beside the pill and shrinks the status line to `font_mono_18`. Enterprise always renders two rows. The daemons get the scoped row from `GET /api/oauth/usage` (Claude Code's own `/usage` source) — the `anthropic-ratelimit-unified-7d_oi-*` headers only appear on requests to the scoped model itself, never on the Haiku probe, so headers can't feed it. Enterprise (no `five_hour` in that body) falls back to the header probe.
+13. **LCD-4 has only one user button (GPIO 0 / BOOT).** GPIO 18 is display R3. KEY/PWR is EN/RST (hardware reset). Hold-to-pair and PWR-short animation/brightness cycling are unavailable; tap the panel to toggle splash ↔ usage.
 
 ## Icons
 
@@ -235,6 +240,8 @@ methodology, including the Lottie sources and the assets-proxy).
 See `~/.claude/projects/.../memory/` files for persistent context (user is an embedded-beginner senior dev, brand-conscious, prefers iterative UI refinement, dislikes me authoring my own art when third-party assets are intended). Always read those memory files at session start.
 
 ## Recent session highlights
+
+- **Third usage row for the model-scoped weekly window (2026-09-20).** t3code (pingdotgg) shows a "Weekly · Fable" bar by asking the Claude Agent SDK's `get_usage`, which is the CLI reading `GET /api/oauth/usage` and projecting `limits[]` rows of `kind: "weekly_scoped"` into `rate_limits.model_scoped[]`. All three daemons now call that endpoint first (free, no inference) and emit `"m"`/`"mr"`/`"ml"`; the firmware switches to a three-row layout when the keys are present. Verified live on a Max account (Fable 32% vs. weekly 18%). Sim gained `SIM_BOOT_SCREEN=usage` and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides for QA at every breakpoint.
 
 - **AMOLED-1.8 chime verified on hardware + EXIO2 touch-kill fix (2026-07-13).** The 1.8's `amp_enable` hook drove both GPIO 46 and XCA9554 EXIO2 ("the unused one is harmless") — but pulling EXIO2 low takes the FT3168 off the I2C bus (chip stops ACKing; IDF reports it as `ESP_ERR_INVALID_STATE`, which reads like a driver wedge and cost a long I2S red-herring chase). Amp enable is GPIO 46 only; EXIO2 must stay HIGH. Chime, touch, buttons, and BLE bond persistence all verified on a real 1.8.
 - **Device-abstraction refactor (2026-05-18).** All board-conditional code moved out of shared files into `boards/<name>/` and behind a HAL in `hal/`. ~30 `#ifdef BOARD_*` blocks went to zero. UI is responsive via `compute_layout()` driven by `board_caps()`. New ports add a folder + a PlatformIO env — no shared file edits.
