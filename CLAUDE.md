@@ -24,6 +24,24 @@ The shared code calls a small HAL (`firmware/src/hal/`) that each board implemen
 
 Connects to a host daemon over BLE; daemon polls Anthropic API for usage data. This file is for future Claude Code sessions to bootstrap quickly. Read this first.
 
+## This is a fork — keep "About this fork" in README.md current (non-negotiable)
+
+This repo is `charlesjones-dev/Clawdmeter`, a fork of `HermannBjorgvin/Clawdmeter`
+(`upstream` remote). README.md has an **About this fork** section directly under
+the intro; it is the one place a visitor learns how this fork differs from
+upstream, so it must never lag the code.
+
+**Every change that alters behaviour, features, config, wiring, or docs users
+see gets a bullet there in the same commit** (add a new bullet, or amend the
+existing one if it extends a listed difference). Do this before committing —
+not as a follow-up. Pure refactors with no visible effect, test-only changes,
+and CLAUDE.md-only edits are the only exceptions. When merging `upstream/main`,
+re-read the section and delete bullets that upstream has since adopted.
+
+Format: bold lead-in naming the change, one to three sentences on what it does
+and how it differs from upstream, a link to the relevant README section or file.
+Keep the "Staying in sync" line at the end of the section.
+
 ## Hardware (critical pins)
 
 ### AMOLED-2.16 (original)
