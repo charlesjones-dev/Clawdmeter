@@ -99,6 +99,31 @@ def _extract_access_token(blob: str) -> str | None:
     return None
 
 
+def _extract_expires_at(blob: str) -> int:
+    """Pull the ``expiresAt`` (ms epoch) out of a credentials blob, or 0.
+
+    Same shapes as _extract_access_token (direct or nested under
+    ``claudeAiOauth``). 0 means "unknown" and sorts below any real timestamp,
+    so a blob that carries an expiry always beats one that doesn't.
+    """
+    blob = blob.strip()
+    if not blob:
+        return 0
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        exp = data.get("expiresAt")
+        if isinstance(exp, (int, float)):
+            return int(exp)
+        for v in data.values():
+            if isinstance(v, dict) and isinstance(v.get("expiresAt"), (int, float)):
+                return int(v["expiresAt"])
+    m = re.search(r'"expiresAt"\s*:\s*(\d+)', blob)
+    return int(m.group(1)) if m else 0
+
+
 def _decode_keychain_blob(raw: str) -> str:
     """Transparently decode a hex-dumped Keychain secret back to text.
 
@@ -116,11 +141,11 @@ def _decode_keychain_blob(raw: str) -> str:
     return raw
 
 
-def _read_token_keychain() -> str | None:
-    """Read the OAuth access token from the macOS Keychain, or None.
+def _read_keychain_blob() -> str | None:
+    """Read the raw credentials blob from the macOS Keychain, or None.
 
     ``security … -w`` may hex-dump the stored secret (see _decode_keychain_blob),
-    so decode before extracting the access token.
+    so the result is decoded back to text before it's returned.
     """
     try:
         out = subprocess.run(
@@ -144,7 +169,13 @@ def _read_token_keychain() -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         log(f"Keychain access error: {e}")
         return None
-    return _extract_access_token(_decode_keychain_blob(out.stdout))
+    return _decode_keychain_blob(out.stdout)
+
+
+def _read_token_keychain() -> str | None:
+    """Read the OAuth access token from the macOS Keychain, or None."""
+    blob = _read_keychain_blob()
+    return _extract_access_token(blob) if blob else None
 
 
 def read_config_dirs() -> list[Path]:
@@ -174,22 +205,44 @@ def read_config_dirs() -> list[Path]:
 def read_token_for(config_dir: Path) -> str | None:
     """Read the OAuth token for one config dir.
 
-    Linux: each dir keeps its own ``<dir>/.credentials.json``. macOS: the default
-    install stores the token in Keychain with no file, so for the default dir we
-    fall back to Keychain when no file is present — preserving existing
-    single-plan macOS behavior. Additional macOS dirs are read from their files;
-    a work plan whose token lives only in the single Keychain entry can't be told
-    apart there (documented follow-up).
+    Linux: each dir keeps its own ``<dir>/.credentials.json``. macOS: Claude
+    Code stores the default install's token in Keychain, but an older
+    ``~/.claude/.credentials.json`` may linger from a previous CLI version or
+    a Linux-style setup. Both are read for the default dir and the one whose
+    ``expiresAt`` is later wins — otherwise a stale file would shadow every
+    fresh ``claude login`` and the daemon would 401 forever. Additional macOS
+    dirs are read from their files; a work plan whose token lives only in the
+    single Keychain entry can't be told apart there (documented follow-up).
     """
     cred = config_dir / ".credentials.json"
+    file_blob = None
     try:
         if cred.exists():
-            return _extract_access_token(cred.read_text())
+            file_blob = cred.read_text()
     except OSError as e:
         log(f"Error reading credentials in {config_dir}: {e}")
-    if sys.platform == "darwin" and config_dir == DEFAULT_CONFIG_DIR:
-        return _read_token_keychain()
-    return None
+
+    if not (sys.platform == "darwin" and config_dir == DEFAULT_CONFIG_DIR):
+        return _extract_access_token(file_blob) if file_blob else None
+
+    # (expiresAt, priority, token): Keychain is the native macOS store, so it
+    # breaks ties (e.g. neither blob carries an expiry).
+    candidates: list[tuple[int, int, str]] = []
+    keychain_blob = _read_keychain_blob()
+    if keychain_blob:
+        tok = _extract_access_token(keychain_blob)
+        if tok:
+            candidates.append((_extract_expires_at(keychain_blob), 1, tok))
+    if file_blob:
+        tok = _extract_access_token(file_blob)
+        if tok:
+            candidates.append((_extract_expires_at(file_blob), 0, tok))
+    if not candidates:
+        return None
+    candidates.sort()
+    if len(candidates) == 2 and candidates[-1][1] == 1 and candidates[0][0] < candidates[-1][0]:
+        log(f"Stale {cred} ignored; using the fresher Keychain token")
+    return candidates[-1][2]
 
 
 def load_cached_address() -> str | None:

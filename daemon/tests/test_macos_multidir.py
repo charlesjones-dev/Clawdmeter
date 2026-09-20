@@ -6,6 +6,7 @@ Covers read_config_dirs, read_token_for, PlanSelector, and poll_active_payload.
 Run: python -m pytest daemon/tests/test_macos_multidir.py -x -q
 """
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -54,20 +55,71 @@ def test_token_for_missing_file_non_default_returns_none(tmp_path, monkeypatch):
     assert read_token_for(tmp_path) is None  # no file, not the default dir
 
 
-def test_token_for_default_dir_falls_back_to_keychain_on_macos(tmp_path, monkeypatch):
-    # An empty dir standing in as the default: no file present -> Keychain.
+def _macos_default(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "DEFAULT_CONFIG_DIR", tmp_path)
     monkeypatch.setattr(mod.sys, "platform", "darwin")
-    with patch.object(mod, "_read_token_keychain", return_value="TOK_KEYCHAIN"):
+
+
+def _blob(token, expires_at=None):
+    inner = {"accessToken": token}
+    if expires_at is not None:
+        inner["expiresAt"] = expires_at
+    return json.dumps({"claudeAiOauth": inner})
+
+
+def test_token_for_default_dir_falls_back_to_keychain_on_macos(tmp_path, monkeypatch):
+    # An empty dir standing in as the default: no file present -> Keychain.
+    _macos_default(tmp_path, monkeypatch)
+    with patch.object(mod, "_read_keychain_blob", return_value=_blob("TOK_KEYCHAIN")):
         assert read_token_for(tmp_path) == "TOK_KEYCHAIN"
 
 
-def test_token_for_file_wins_over_keychain(tmp_path, monkeypatch):
-    monkeypatch.setattr(mod, "DEFAULT_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(mod.sys, "platform", "darwin")
-    (tmp_path / ".credentials.json").write_text('{"accessToken":"TOK_FILE"}')
-    with patch.object(mod, "_read_token_keychain", return_value="TOK_KEYCHAIN"):
+def test_token_for_file_wins_when_it_expires_later(tmp_path, monkeypatch):
+    _macos_default(tmp_path, monkeypatch)
+    (tmp_path / ".credentials.json").write_text(_blob("TOK_FILE", 2_000))
+    with patch.object(mod, "_read_keychain_blob", return_value=_blob("TOK_KEYCHAIN", 1_000)):
         assert read_token_for(tmp_path) == "TOK_FILE"
+
+
+def test_token_for_keychain_wins_over_stale_file(tmp_path, monkeypatch):
+    """The real-world macOS failure: `claude login` refreshes only the Keychain,
+    but an old ~/.claude/.credentials.json lingers. The stale file must not
+    shadow the fresh token or the daemon 401s until someone deletes the file."""
+    _macos_default(tmp_path, monkeypatch)
+    (tmp_path / ".credentials.json").write_text(_blob("TOK_FILE", 1_000))
+    with patch.object(mod, "_read_keychain_blob", return_value=_blob("TOK_KEYCHAIN", 2_000)):
+        assert read_token_for(tmp_path) == "TOK_KEYCHAIN"
+
+
+def test_token_for_keychain_breaks_ties_on_macos(tmp_path, monkeypatch):
+    # Neither blob carries an expiry: the native macOS store wins.
+    _macos_default(tmp_path, monkeypatch)
+    (tmp_path / ".credentials.json").write_text('{"accessToken":"TOK_FILE"}')
+    with patch.object(mod, "_read_keychain_blob", return_value='{"accessToken":"TOK_KEYCHAIN"}'):
+        assert read_token_for(tmp_path) == "TOK_KEYCHAIN"
+
+
+def test_token_for_file_used_when_keychain_empty(tmp_path, monkeypatch):
+    _macos_default(tmp_path, monkeypatch)
+    (tmp_path / ".credentials.json").write_text(_blob("TOK_FILE", 1_000))
+    with patch.object(mod, "_read_keychain_blob", return_value=None):
+        assert read_token_for(tmp_path) == "TOK_FILE"
+
+
+def test_token_for_blank_keychain_token_yields_file(tmp_path, monkeypatch):
+    # Logged-out Keychain entry (values blanked in place) must not beat a real file token.
+    _macos_default(tmp_path, monkeypatch)
+    (tmp_path / ".credentials.json").write_text(_blob("TOK_FILE", 1_000))
+    with patch.object(mod, "_read_keychain_blob", return_value=_blob("", 9_000)):
+        assert read_token_for(tmp_path) == "TOK_FILE"
+
+
+def test_extract_expires_at_shapes():
+    assert mod._extract_expires_at(_blob("t", 1234)) == 1234
+    assert mod._extract_expires_at('{"accessToken":"t","expiresAt":42}') == 42
+    assert mod._extract_expires_at('{"accessToken":"t"}') == 0
+    assert mod._extract_expires_at("not json") == 0
+    assert mod._extract_expires_at("") == 0
 
 
 # ---------------------------------------------------------------------------
