@@ -16,6 +16,9 @@ struct UsageData {
     float scoped_pct;        // model-scoped weekly utilization 0-100 (Fable today)
     int scoped_reset_mins;   // minutes until the model-scoped window resets
     char scoped_label[16];   // server-supplied row label, e.g. "Fable" (daemon clips to 15)
+    bool has_keymap;         // payload carried "bl"/"br" side-button key bindings
+    uint8_t key_left[2];     // [HID usage id, modifier bits] for the left button
+    uint8_t key_right[2];    // same for the right button (boards without one ignore it)
     long clock_epoch;        // local wall-clock epoch (s) from daemon; 0 = not provided
     int  clock_fmt;          // 12 or 24 (hour format from daemon); defaults to 24
     bool ok;                 // data parse succeeded

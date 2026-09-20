@@ -462,6 +462,99 @@ def add_clock_fields(payload: dict) -> None:
     payload["tf"] = tf
 
 
+# --- Side-button key bindings ---------------------------------------------------
+# The two side buttons send a key over BLE HID. Which key is configurable via
+# `button_left` / `button_right` in the config file (defaults: space and
+# shift+tab, the Claude Code push-to-talk and mode-toggle shortcuts). Names map
+# to USB HID usage IDs (Usage Tables, keyboard page 0x07); modifiers are the bit
+# flags of the report's first byte (left-hand variants). Chords use "+".
+HID_MODIFIERS = {
+    "ctrl": 0x01, "control": 0x01,
+    "shift": 0x02,
+    "alt": 0x04, "option": 0x04,
+    "cmd": 0x08, "command": 0x08, "win": 0x08, "gui": 0x08, "meta": 0x08, "super": 0x08,
+}
+HID_KEYS = {
+    "enter": 0x28, "return": 0x28, "esc": 0x29, "escape": 0x29, "backspace": 0x2A,
+    "tab": 0x2B, "space": 0x2C, "minus": 0x2D, "equals": 0x2E,
+    "lbracket": 0x2F, "rbracket": 0x30, "backslash": 0x31, "semicolon": 0x33,
+    "quote": 0x34, "grave": 0x35, "comma": 0x36, "period": 0x37, "slash": 0x38,
+    "capslock": 0x39, "printscreen": 0x46, "scrolllock": 0x47, "pause": 0x48,
+    "insert": 0x49, "home": 0x4A, "pageup": 0x4B, "delete": 0x4C, "end": 0x4D,
+    "pagedown": 0x4E, "right": 0x4F, "left": 0x50, "down": 0x51, "up": 0x52,
+}
+HID_KEYS.update({ch: 0x04 + i for i, ch in enumerate("abcdefghijklmnopqrstuvwxyz")})
+HID_KEYS.update({ch: 0x1E + i for i, ch in enumerate("123456789")})
+HID_KEYS["0"] = 0x27
+HID_KEYS.update({f"f{i}": 0x3A + i - 1 for i in range(1, 13)})
+BUTTON_DEFAULTS = {"left": "space", "right": "shift+tab"}
+
+
+def parse_key_spec(spec: str) -> tuple[int, int] | None:
+    """'ctrl+shift+p' -> (0x13, 0x03); 'none' -> (0, 0) (button disabled);
+    unknown name -> None. Case-insensitive; whitespace around '+' is ignored."""
+    if not isinstance(spec, str):
+        return None
+    s = spec.strip().lower()
+    if s in ("none", "off", "disabled"):
+        return (0, 0)
+    parts = [p.strip() for p in s.split("+")]
+    if not parts or any(not p for p in parts):
+        return None
+    mod = 0
+    for p in parts[:-1]:
+        if p not in HID_MODIFIERS:
+            return None
+        mod |= HID_MODIFIERS[p]
+    last = parts[-1]
+    if last in HID_KEYS:
+        return (HID_KEYS[last], mod)
+    if last in HID_MODIFIERS:          # modifier-only chord, e.g. "shift"
+        return (0, mod | HID_MODIFIERS[last])
+    return None
+
+
+def _read_config_value(key: str) -> str | None:
+    """Raw value of `key = value` in the config file (last one wins), or None."""
+    try:
+        if not CONFIG_FILE.exists():
+            return None
+        found = None
+        for line in CONFIG_FILE.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip().lower() == key:
+                found = v.strip()
+        return found
+    except OSError:
+        return None
+
+
+def read_button_setting(side: str) -> tuple[int, int]:
+    """(key, modifier) for `button_left` / `button_right`. Unset or unparseable
+    values fall back to the default for that side (logged once)."""
+    default = parse_key_spec(BUTTON_DEFAULTS[side])
+    raw = _read_config_value(f"button_{side}")
+    if raw is None or raw == "":
+        return default
+    parsed = parse_key_spec(raw)
+    if parsed is None:
+        _log_once(f"btn-{side}-{raw}", f"Ignoring unrecognized button_{side} = '{raw}' "
+                                       f"(using {BUTTON_DEFAULTS[side]})")
+        return default
+    return parsed
+
+
+def add_button_fields(payload: dict) -> None:
+    """Always add "bl"/"br" = [key, modifier] so the device tracks the config
+    file whenever the daemon is connected (it persists the last mapping in NVS
+    for use while unpaired). Old firmware ignores the keys."""
+    payload["bl"] = list(read_button_setting("left"))
+    payload["br"] = list(read_button_setting("right"))
+
+
 _NOTED: set = set()
 
 
@@ -593,6 +686,7 @@ async def poll_api(token: str) -> dict | None:
                 if payload is not None:
                     add_chime_field(payload)   # adds "c":1 iff the config opts in
                     add_clock_fields(payload)  # adds "t" + "tf" iff the config opts in
+                    add_button_fields(payload) # adds "bl"/"br" side-button key bindings
                     return payload
                 _log_once("usage-no-5h", "Usage endpoint has no 5h window (Enterprise?); "
                                          "using rate-limit headers")
@@ -653,6 +747,7 @@ async def poll_api(token: str) -> dict | None:
         }
     add_chime_field(payload)   # adds "c":1 iff the config opts in
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
+    add_button_fields(payload)  # adds "bl"/"br" side-button key bindings
     return payload
 
 

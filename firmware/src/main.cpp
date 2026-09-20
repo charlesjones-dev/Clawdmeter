@@ -12,6 +12,7 @@
 #include "idle.h"
 #include "idle_cfg.h"
 #include "brightness.h"
+#include "keymap.h"
 
 #include "hal/board_caps.h"
 #include "hal/display_hal.h"
@@ -123,6 +124,16 @@ static bool parse_json(const char* json, UsageData* out) {
     out->scoped_pct = doc["m"] | 0.0f;
     out->scoped_reset_mins = doc["mr"] | -1;
     strlcpy(out->scoped_label, doc["ml"] | "Model", sizeof(out->scoped_label));
+    // Side-button key bindings: "bl"/"br" = [HID usage id, modifier bits].
+    // Absent (older daemon) → keep whatever keymap.cpp has (saved or default).
+    out->has_keymap = false;
+    JsonArray bl = doc["bl"].as<JsonArray>();
+    JsonArray br = doc["br"].as<JsonArray>();
+    if (!bl.isNull() && bl.size() == 2 && !br.isNull() && br.size() == 2) {
+        out->has_keymap = true;
+        out->key_left[0]  = bl[0] | 0;  out->key_left[1]  = bl[1] | 0;
+        out->key_right[0] = br[0] | 0;  out->key_right[1] = br[1] | 0;
+    }
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
     out->ok = doc["ok"] | false;
@@ -233,6 +244,7 @@ void setup() {
 
     ble_init();
     input_hal_init();
+    keymap_init();      // side-button key bindings (saved in NVS; daemon may update)
 
     ui_init();
     ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
@@ -322,7 +334,10 @@ void loop() {
         if (primary_now != primary_was) {
             if (primary_now) {
                 if (idle_consume_wake_press()) primary_wake_swallowed = true;
-                else                            ble_keyboard_press(0x2C, 0);  // HID Space, no mods
+                else {
+                    uint8_t k, m; keymap_get(KEYMAP_LEFT, &k, &m);   // default: HID Space
+                    if (k || m) ble_keyboard_press(k, m);
+                }
             } else {
                 if (primary_wake_swallowed) primary_wake_swallowed = false;
                 else                        ble_keyboard_release();
@@ -337,7 +352,10 @@ void loop() {
             if (secondary_now != secondary_was) {
                 if (secondary_now) {
                     if (idle_consume_wake_press()) secondary_wake_swallowed = true;
-                    else                            ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
+                    else {
+                        uint8_t k, m; keymap_get(KEYMAP_RIGHT, &k, &m);   // default: Shift+Tab
+                        if (k || m) ble_keyboard_press(k, m);
+                    }
                 } else {
                     if (secondary_wake_swallowed) secondary_wake_swallowed = false;
                     else                          ble_keyboard_release();
@@ -379,6 +397,7 @@ void loop() {
 
     if (ble_has_data()) {
         if (parse_json(ble_get_data(), &usage)) {
+            keymap_apply(&usage);   // adopt/persist side-button bindings if the daemon sent them
             int g_before = usage_rate_group();
             bool session_reset = usage_rate_sample(usage.session_pct);
             int g_after = usage_rate_group();

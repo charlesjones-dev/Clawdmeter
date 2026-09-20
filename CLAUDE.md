@@ -31,7 +31,7 @@ Connects to a host daemon over BLE; daemon polls Anthropic API for usage data. T
 - Touch: **CST9220** via I2C (SDA=15, SCL=14, INT=11, addr=0x5A)
 - PMU: **AXP2101** on same I2C bus (addr=0x34) — battery, USB VBUS, PWR button IRQ
 - IMU: **QMI8658** on same I2C bus (addr=0x6B) — accelerometer for auto-rotation
-- Buttons: GPIO 0 (left → Space/voice-mode), GPIO 18 (right → Shift+Tab/mode-toggle), AXP PKEY (middle → cycle screens; on splash → cycle animations)
+- Buttons: GPIO 0 (left → HID key, default Space/voice-mode), GPIO 18 (right → HID key, default Shift+Tab/mode-toggle; both configurable via `button_left`/`button_right`), AXP PKEY (middle → cycle screens; on splash → cycle animations)
 
 ### AMOLED-1.8 (newer port)
 **Two hardware revisions ship under this name; the firmware probes I2C at boot and picks drivers automatically (`board_rev()`):**
@@ -184,7 +184,8 @@ The boot screen is `SCREEN_SPLASH` and only advances on a physical button press,
 10. **No `#ifdef BOARD_*` in shared code.** The whole point of the refactor — if you're about to add one, you probably want a `BoardCaps` field or a per-board file instead. See `docs/porting/capability-flags.md`.
 11. **LCD-4 RGB bounce buffers.** `Arduino_RGB_Display` DMA-scans PSRAM. Pass `bounce_buffer_size_px = LCD_WIDTH * 10` so ESP-IDF allocates SRAM bounce buffers. Do not call `rgbpanel->getFrameBuffer()` after `gfx->begin()` — it constructs a second RGB panel and crashes.
 12. **Usage screen has two layouts, picked per payload.** `ui_update()` rebuilds the panel group (`build_usage_rows()`) as three rows when the daemon sends a model-scoped weekly window (`"m"`/`"mr"`/`"ml"`, Fable today) and two rows otherwise. Row metrics live in `RowStyle` (`L.rows2` / `L.rows3`) per breakpoint; the three-row variant puts the reset text inline beside the pill and shrinks the status line to `font_mono_18`. Enterprise always renders two rows. The daemons get the scoped row from `GET /api/oauth/usage` (Claude Code's own `/usage` source) — the `anthropic-ratelimit-unified-7d_oi-*` headers only appear on requests to the scoped model itself, never on the Haiku probe, so headers can't feed it. Enterprise (no `five_hour` in that body) falls back to the header probe.
-13. **LCD-4 has only one user button (GPIO 0 / BOOT).** GPIO 18 is display R3. KEY/PWR is EN/RST (hardware reset). Hold-to-pair and PWR-short animation/brightness cycling are unavailable; tap the panel to toggle splash ↔ usage.
+13. **Side-button keys are data, not literals.** `keymap.{h,cpp}` owns the two HID bindings (defaults Space / Shift+Tab), persisted in NVS namespace `clawdmeter` (`kl_k/kl_m/kr_k/kr_m`). The daemons always send `"bl"/"br":[key,mod]` from `button_left`/`button_right` in the config (name → HID table lives in `parse_key_spec` / the bash `KEYMAP_PY` heredoc — keep the two tables identical; `test_buttons.py` + `test_bash_keymap.sh` pin them). The installers' `configure_buttons` step validates through the daemon's own parser.
+14. **LCD-4 has only one user button (GPIO 0 / BOOT).** GPIO 18 is display R3. KEY/PWR is EN/RST (hardware reset). Hold-to-pair and PWR-short animation/brightness cycling are unavailable; tap the panel to toggle splash ↔ usage.
 
 ## Icons
 

@@ -37,7 +37,9 @@ absolute path or `CLAUDE_CONFIG_DIR` to a directory to override the search entir
 
 The Clawdmeter is a **bonded BLE HID keyboard** as well as a usage display — its firmware
 enables bonding (`NimBLEDevice::setSecurityAuth`) and advertises the HID service so its
-physical buttons act as a keyboard (Space / Shift+Tab). Pair it with Windows **once**,
+physical buttons act as a keyboard (Space / Shift+Tab by default; `install-windows.ps1`
+prompts for other keys, or set `button_left` / `button_right` in
+`%LOCALAPPDATA%\Clawdmeter\config`). Pair it with Windows **once**,
 before running the daemon:
 
 1. Put the device on its Bluetooth waiting screen (powered on, not yet connected).

@@ -115,6 +115,51 @@ configure_clock() {
     echo "  Set: clock = $ans"
 }
 
+# Validate a key name with the daemon's own parser so the installer and daemon
+# can never disagree. Runs after the venv exists (step 2).
+validate_key_spec() {
+    "$VENV_DIR/bin/python" - "$1" <<PYEOF
+import sys
+sys.path.insert(0, r"$SCRIPT_DIR")
+from daemon.claude_usage_daemon import parse_key_spec
+sys.exit(0 if parse_key_spec(sys.argv[1]) is not None else 1)
+PYEOF
+}
+
+# Offer custom key bindings for the two side buttons (boards with one button
+# only use the left one). Names: space, tab, enter, esc, backspace, letters,
+# digits, f1-f12, arrows (up/down/left/right), home/end/pageup/pagedown, and
+# chords with ctrl/shift/alt/cmd, e.g. ctrl+shift+p. "none" disables a button.
+# Only writes a key when it differs from the current/default value.
+configure_buttons() {
+    [ -t 0 ] || return 0
+    echo "  The side buttons each send a key over Bluetooth (chords OK, e.g. ctrl+shift+p;"
+    echo "  'none' disables a button). Press Enter to keep the value in brackets."
+    local side label def cur ans
+    for side in left right; do
+        case "$side" in
+            left)  label="Left";  def="space" ;;
+            *)     label="Right"; def="shift+tab" ;;
+        esac
+        cur=$(current_config_value "button_$side")
+        read -r -p "  $label button key [${cur:-$def}]: " ans || ans=""
+        ans=$(echo "$ans" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        [ -z "$ans" ] && ans="${cur:-$def}"
+        if ! validate_key_spec "$ans"; then
+            echo "  Unrecognized '$ans' — leaving button_$side unchanged."
+            continue
+        fi
+        if [ "$ans" = "$cur" ]; then
+            echo "  $label button: $ans (unchanged)."
+        elif [ -z "$cur" ] && [ "$ans" = "$def" ]; then
+            echo "  $label button: $def (default)."
+        else
+            upsert_config_key "button_$side" "$ans"
+            echo "  Set: button_$side = $ans"
+        fi
+    done
+}
+
 # Offer the optional session-reset chime (sound through the board speaker).
 configure_chime() {
     [ -t 0 ] || return 0
@@ -207,12 +252,14 @@ sed \
 echo "  Installed: $PLIST_DST"
 echo ""
 
-# Interactive daemon configuration: which plans to poll, plus the optional
-# clock display and session-reset chime. All re-read by the daemon each poll.
+# Interactive daemon configuration: which plans to poll, the optional clock
+# display and session-reset chime, and the side-button key bindings. All
+# re-read by the daemon each poll.
 echo "[4/6] Configuring the daemon..."
 configure_config_dirs
 configure_clock
 configure_chime
+configure_buttons
 echo ""
 
 echo "[5/6] Bluetooth permission check..."

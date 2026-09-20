@@ -30,3 +30,17 @@ chime = off
 #   12   = show the clock, forced 12-hour  (e.g. 6:28 PM)
 #   24   = show the clock, forced 24-hour  (e.g. 18:28)
 clock = off
+
+# Side-button key bindings. Each side button sends one key over Bluetooth (HID
+# keyboard) to whatever window has focus, held while the button is held.
+#   Keys:      space, tab, enter, esc, backspace, delete, a-z, 0-9, f1-f12,
+#              up/down/left/right, home/end/pageup/pagedown, minus, equals,
+#              comma, period, slash, semicolon, quote, grave, lbracket, rbracket
+#   Modifiers: ctrl, shift, alt (option), cmd (win / super) — chords with "+"
+#   none       disables the button
+# Defaults are Claude Code's shortcuts: space = voice-mode push-to-talk,
+# shift+tab = mode toggle. Boards with a single side button use button_left.
+# The install scripts prompt for these; the daemon re-reads them every poll and
+# the device keeps the last mapping while unpaired.
+# button_left = space
+# button_right = shift+tab

@@ -106,6 +106,49 @@ configure_clock() {
     echo "  Set: clock = $ans"
 }
 
+# Validate a key name with the daemon's own parser (KEYMAP_PY heredoc in
+# claude-usage-daemon.sh) so the installer and daemon can never disagree.
+validate_key_spec() {
+    if [ -z "${KEYMAP_PY:-}" ]; then
+        eval "$(awk '/^read -r -d .. KEYMAP_PY <<.PYEOF.$/{f=1} f{print} f&&/^PYEOF$/{exit}' "$SCRIPT_DIR/daemon/claude-usage-daemon.sh")"
+    fi
+    python3 -c "$KEYMAP_PY" "$1" >/dev/null 2>&1
+}
+
+# Offer custom key bindings for the two side buttons (boards with one button
+# only use the left one). Names: space, tab, enter, esc, backspace, letters,
+# digits, f1-f12, arrows (up/down/left/right), home/end/pageup/pagedown, and
+# chords with ctrl/shift/alt/cmd, e.g. ctrl+shift+p. "none" disables a button.
+# Only writes a key when it differs from the current/default value.
+configure_buttons() {
+    [ -t 0 ] || return 0
+    echo "  The side buttons each send a key over Bluetooth (chords OK, e.g. ctrl+shift+p;"
+    echo "  'none' disables a button). Press Enter to keep the value in brackets."
+    local side label def cur ans
+    for side in left right; do
+        case "$side" in
+            left)  label="Left";  def="space" ;;
+            *)     label="Right"; def="shift+tab" ;;
+        esac
+        cur=$(current_config_value "button_$side")
+        read -r -p "  $label button key [${cur:-$def}]: " ans || ans=""
+        ans=$(echo "$ans" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        [ -z "$ans" ] && ans="${cur:-$def}"
+        if ! validate_key_spec "$ans"; then
+            echo "  Unrecognized '$ans' — leaving button_$side unchanged."
+            continue
+        fi
+        if [ "$ans" = "$cur" ]; then
+            echo "  $label button: $ans (unchanged)."
+        elif [ -z "$cur" ] && [ "$ans" = "$def" ]; then
+            echo "  $label button: $def (default)."
+        else
+            upsert_config_key "button_$side" "$ans"
+            echo "  Set: button_$side = $ans"
+        fi
+    done
+}
+
 # Offer the optional session-reset chime (sound through the board speaker).
 configure_chime() {
     [ -t 0 ] || return 0
@@ -128,7 +171,7 @@ echo ""
 
 # Check dependencies
 echo "[1/4] Checking dependencies..."
-for cmd in curl awk bluetoothctl busctl; do
+for cmd in curl awk python3 bluetoothctl busctl; do
     command -v "$cmd" >/dev/null || { echo "Error: $cmd is required but not installed"; exit 1; }
 done
 echo "  All dependencies found"
@@ -147,6 +190,7 @@ echo "[3/4] Configuring the daemon..."
 configure_config_dirs
 configure_clock
 configure_chime
+configure_buttons
 echo ""
 
 # Enable service

@@ -278,6 +278,75 @@ write_gatt() {
 # Build the device payload for one OAuth token. Echoes the JSON payload on
 # success (empty + non-zero return on failure). Pure: no logging, no GATT write
 # — poll() owns picking the active plan and sending it.
+# --- Side-button key bindings -----------------------------------------------
+# `button_left` / `button_right` in the config name the key each side button
+# sends over BLE HID (defaults: space and shift+tab — Claude Code's push-to-talk
+# and mode-toggle). Names map to USB HID usage IDs; chords use "+" (e.g.
+# ctrl+shift+p); "none" disables a button. The parser prints "key,modifier" or
+# exits 1 for an unrecognized name. Same table as the Python daemons.
+read -r -d '' KEYMAP_PY <<'PYEOF'
+import sys
+MODS = {"ctrl": 1, "control": 1, "shift": 2, "alt": 4, "option": 4,
+        "cmd": 8, "command": 8, "win": 8, "gui": 8, "meta": 8, "super": 8}
+KEYS = {"enter": 0x28, "return": 0x28, "esc": 0x29, "escape": 0x29, "backspace": 0x2A,
+        "tab": 0x2B, "space": 0x2C, "minus": 0x2D, "equals": 0x2E, "lbracket": 0x2F,
+        "rbracket": 0x30, "backslash": 0x31, "semicolon": 0x33, "quote": 0x34, "grave": 0x35,
+        "comma": 0x36, "period": 0x37, "slash": 0x38, "capslock": 0x39, "printscreen": 0x46,
+        "scrolllock": 0x47, "pause": 0x48, "insert": 0x49, "home": 0x4A, "pageup": 0x4B,
+        "delete": 0x4C, "end": 0x4D, "pagedown": 0x4E, "right": 0x4F, "left": 0x50,
+        "down": 0x51, "up": 0x52}
+KEYS.update({c: 4 + i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")})
+KEYS.update({c: 0x1E + i for i, c in enumerate("123456789")}); KEYS["0"] = 0x27
+KEYS.update({f"f{i}": 0x3A + i - 1 for i in range(1, 13)})
+s = sys.argv[1].strip().lower()
+if s in ("none", "off", "disabled"):
+    print("0,0"); sys.exit(0)
+parts = [x.strip() for x in s.split("+")]
+if not parts or any(not x for x in parts):
+    sys.exit(1)
+mod = 0
+for x in parts[:-1]:
+    if x not in MODS: sys.exit(1)
+    mod |= MODS[x]
+last = parts[-1]
+if last in KEYS: print(f"{KEYS[last]},{mod}")
+elif last in MODS: print(f"0,{mod | MODS[last]}")
+else: sys.exit(1)
+PYEOF
+
+# Echo the configured spec for one side (left|right), or that side's default.
+read_button_setting() {
+    local side="$1" val="" def
+    case "$side" in left) def="space" ;; *) def="shift+tab" ;; esac
+    if [ -f "$CONFIG_FILE" ]; then
+        val=$(grep -E "^[[:space:]]*button_${side}[[:space:]]*=" "$CONFIG_FILE" | tail -1 \
+            | tr -d '\r' \
+            | sed -E "s/^[[:space:]]*button_${side}[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//" \
+            | tr '[:upper:]' '[:lower:]')
+    fi
+    echo "${val:-$def}"
+}
+
+# Payload fragment `,"bl":[key,mod],"br":[key,mod]` — always sent so the device
+# tracks the config file while connected (it keeps the last mapping in NVS for
+# use while unpaired). Unrecognized names fall back to the default, logged once.
+declare -A BTN_WARNED
+button_fragment() {
+    local side spec km frag=""
+    for side in left right; do
+        spec=$(read_button_setting "$side")
+        if ! km=$(python3 -c "$KEYMAP_PY" "$spec" 2>/dev/null); then
+            if [ -z "${BTN_WARNED[$side-$spec]:-}" ]; then
+                BTN_WARNED[$side-$spec]=1
+                log "Ignoring unrecognized button_$side = '$spec' (using default)"
+            fi
+            case "$side" in left) km="44,0" ;; *) km="43,2" ;; esac
+        fi
+        frag="$frag,\"b${side:0:1}\":[$km]"
+    done
+    printf '%s' "$frag"
+}
+
 # --- OAuth usage endpoint (primary source) ----------------------------------
 # GET https://api.anthropic.com/api/oauth/usage is what Claude Code's own /usage
 # screen reads: 5h + 7d windows as 0-100 percentages with ISO reset times, plus a
@@ -379,10 +448,14 @@ build_payload_for_token() {
     chime=$(read_chime_setting)
     [ "$chime" = "on" ] && chime_fragment=",\"c\":1"
 
+    # Side-button key bindings (always present; see button_fragment).
+    local btn_fragment
+    btn_fragment=$(button_fragment)
+
     # Primary: OAuth usage endpoint (Pro/Max — includes the per-model weekly row).
     local usage_frag
     if usage_frag=$(fetch_usage_fragment "$token") && [ -n "$usage_frag" ]; then
-        printf '{%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment"
+        printf '{%s%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment" "$btn_fragment"
         return 0
     fi
 
@@ -416,13 +489,13 @@ build_payload_for_token() {
         s5h_util=${s5h_util:-0}; s5h_reset=${s5h_reset:-0}
         s7d_util=${s7d_util:-0}; s7d_reset=${s7d_reset:-0}
         s5h_status=${s5h_status:-unknown}
-        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" \
+        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" \
             'BEGIN {
                 sp = sprintf("%.0f", u5 * 100);
                 sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
                 wp = sprintf("%.0f", u7 * 100);
                 wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
-                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm;
+                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm, btn;
             }')
     else
         # Enterprise account — spending-limit model
@@ -444,7 +517,7 @@ rd = f"{dt_end.strftime('%b')} {dt_end.day}"
 print(json.dumps({"tp": tp, "pd": pd_days, "rd": rd}))
 PYEOF
 )
-        payload=$(awk -v ou="$overage_util" -v or_="$overage_reset" -v st="$status" -v now="$now" -v pi="$period_info" -v clk="$clock_fragment" -v chm="$chime_fragment" \
+        payload=$(awk -v ou="$overage_util" -v or_="$overage_reset" -v st="$status" -v now="$now" -v pi="$period_info" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" \
             'BEGIN {
                 sp = sprintf("%.0f", ou * 100);
                 sr = (or_ - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
@@ -453,7 +526,7 @@ PYEOF
                 match(pi, /"tp": *([0-9]+)/, a); if (RSTART) tp = a[1];
                 match(pi, /"pd": *([0-9]+)/, b); if (RSTART) pd = b[1];
                 match(pi, /"rd": *"([^"]+)"/, c); if (RSTART) rd = c[1];
-                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s,\"ok\":true}", sp, sr, st, tp, pd, rd, clk, chm;
+                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s%s,\"ok\":true}", sp, sr, st, tp, pd, rd, clk, chm, btn;
             }')
     fi
 

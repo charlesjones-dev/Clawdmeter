@@ -84,7 +84,78 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
 Log "Dependencies installed"
 
 # ------------------------------------------------------------------
-# Step 3: Register autostart (HKCU\Run, per-user, no admin needed)
+# Step 3: Configure the side buttons (optional, interactive)
+# ------------------------------------------------------------------
+# The daemon re-reads %LOCALAPPDATA%\Clawdmeter\config on every poll. Each side
+# button sends one key over BLE HID; names map to HID usage IDs and chords use
+# "+" (e.g. ctrl+shift+p). "none" disables a button. Validation runs through the
+# daemon's own parser so the installer and daemon never disagree.
+$ConfigDir  = Join-Path $env:LOCALAPPDATA "Clawdmeter"
+$ConfigFile = Join-Path $ConfigDir "config"
+
+function Get-ConfigValue {
+    param([string]$Key)
+    if (-not (Test-Path $ConfigFile)) { return "" }
+    $val = ""
+    foreach ($line in Get-Content $ConfigFile) {
+        $l = ($line -split '#', 2)[0].Trim()
+        if ($l -notmatch '=') { continue }
+        $k, $v = $l -split '=', 2
+        if ($k.Trim().ToLower() -eq $Key) { $val = $v.Trim() }
+    }
+    return $val
+}
+
+function Set-ConfigKey {
+    param([string]$Key, [string]$Value)
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    $lines = @()
+    if (Test-Path $ConfigFile) {
+        $lines = @(Get-Content $ConfigFile | Where-Object { $_ -notmatch "^\s*$Key\s*=" })
+    }
+    $lines += "$Key = $Value"
+    Set-Content -Path $ConfigFile -Value $lines
+}
+
+function Test-KeySpec {
+    param([string]$Spec)
+    & $PythonExe -c @"
+import sys
+sys.path.insert(0, r'$RepoRoot')
+from daemon.claude_usage_daemon_windows import parse_key_spec
+sys.exit(0 if parse_key_spec(sys.argv[1]) is not None else 1)
+"@ $Spec
+    return ($LASTEXITCODE -eq 0)
+}
+
+$Interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+if ($Interactive) {
+    Log "Configuring the side buttons (Enter keeps the value in brackets; chords OK, e.g. ctrl+shift+p; 'none' disables)"
+    $defaults = [ordered]@{ left = "space"; right = "shift+tab" }
+    foreach ($side in $defaults.Keys) {
+        $def = $defaults[$side]
+        $cur = Get-ConfigValue "button_$side"
+        $shown = if ($cur) { $cur } else { $def }
+        $label = (Get-Culture).TextInfo.ToTitleCase($side)
+        $ans = (Read-Host "  $label button key [$shown]").Trim().ToLower() -replace '\s', ''
+        if (-not $ans) { $ans = $shown }
+        if (-not (Test-KeySpec $ans)) {
+            Log "  Unrecognized '$ans' - leaving button_$side unchanged"
+        } elseif ($ans -eq $cur) {
+            Log "  $label button: $ans (unchanged)"
+        } elseif (-not $cur -and $ans -eq $def) {
+            Log "  $label button: $def (default)"
+        } else {
+            Set-ConfigKey "button_$side" $ans
+            Log "  Set: button_$side = $ans"
+        }
+    }
+} else {
+    Log "Non-interactive session - skipping button configuration (edit $ConfigFile: button_left / button_right)"
+}
+
+# ------------------------------------------------------------------
+# Step 4: Register autostart (HKCU\Run, per-user, no admin needed)
 # ------------------------------------------------------------------
 # Derive all paths at install time - never hard-code an absolute path that
 # breaks when the repository is moved (CLAUDE.md "repoint ExecStart" lesson,
@@ -104,7 +175,7 @@ if ($LASTEXITCODE -ne 0) { throw "Autostart registration failed (exit $LASTEXITC
 Log "Autostart registered - Clawdmeter will launch automatically at next logon"
 
 # ------------------------------------------------------------------
-# Step 4: Launch the tray app (headless - BASE pythonw.exe, no console window)
+# Step 5: Launch the tray app (headless - BASE pythonw.exe, no console window)
 # ------------------------------------------------------------------
 # Use the BASE interpreter's pythonw.exe, NOT the venv's Scripts\pythonw.exe.
 # The venv pythonw is a redirector stub that re-launches the CONSOLE python.exe

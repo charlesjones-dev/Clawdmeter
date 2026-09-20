@@ -34,6 +34,10 @@ upstream.
   `m`/`mr`/`ml` keys; see [BLE protocol](#ble-protocol).
 - **macOS daemon token selection.** A stale `~/.claude/.credentials.json` no
   longer shadows a fresher token in the Keychain; whichever expires later wins.
+- **Configurable side buttons.** `button_left` / `button_right` in the daemon
+  config choose the key each button sends (single keys or chords such as
+  `ctrl+shift+p`); the install scripts prompt for them. Upstream hardcodes
+  Space and Shift+Tab. See [Physical buttons](#physical-buttons).
 - **Simulator QA hooks.** `SIM_BOOT_SCREEN=usage` for headless screenshots
   without editing `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides
   to check the 368×448 and 240×240 layouts without hardware. See
@@ -237,11 +241,13 @@ The board has three side buttons. Left and right send HID keys; the middle (PWR)
 
 | Button           | GPIO         | Function                                                     |
 | ---------------- | ------------ | ------------------------------------------------------------ |
-| **Left**         | GPIO 0       | Hold to send Space (Claude Code voice-mode push-to-talk)     |
+| **Left**         | GPIO 0       | Hold to send a key — default Space (Claude Code voice-mode push-to-talk) |
 | **Middle** (PWR) | AXP2101 PKEY | On splash: cycle animations. Hold 3s + release: pairing mode |
-| **Right**        | GPIO 18      | Press to send Shift+Tab (Claude Code mode toggle)            |
+| **Right**        | GPIO 18      | Hold to send a key — default Shift+Tab (Claude Code mode toggle) |
 
-Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code.
+The keys go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code.
+
+**Configurable:** set `button_left` / `button_right` in the daemon config (the install scripts prompt for them). Single keys and chords both work, e.g. `tab`, `enter`, `ctrl+shift+p`, `cmd+k`; `none` disables a button. See [`daemon/config.example`](daemon/config.example) for the full name list. The daemon sends the mapping with every payload and the device stores it, so the buttons keep working while unpaired. Boards with one side button use `button_left`.
 
 ## BLE protocol
 
@@ -262,6 +268,7 @@ JSON payload format (written to RX):
 
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
 Optional: `m` / `mr` / `ml` = a model-scoped weekly window (utilization %, reset minutes, server label — Fable today). When present the device shows a third row; older daemons never send it and the two-row layout is unchanged.
+`bl` / `br` = side-button key bindings as `[HID usage id, modifier bits]` (e.g. `[44,0]` = Space, `[43,2]` = Shift+Tab). The device persists the last mapping in NVS.
 
 The daemons read these from `GET https://api.anthropic.com/api/oauth/usage` (the same endpoint Claude Code's `/usage` screen uses — one free call, no inference). Enterprise accounts have no 5h window there, so they fall back to the rate-limit headers of a minimal `/v1/messages` probe, as before.
 
