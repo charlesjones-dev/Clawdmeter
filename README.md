@@ -10,6 +10,41 @@ Shift+Tab over BLE HID for Claude Code's voice mode and mode-toggle shortcuts.
 
 <img width="1179" height="994" alt="Usage meter" src="https://github.com/user-attachments/assets/83e54aea-0932-428f-94aa-b3ede3a360aa" />
 
+## About this fork
+
+This is [charlesjones-dev/Clawdmeter](https://github.com/charlesjones-dev/Clawdmeter),
+a fork of [HermannBjorgvin/Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter).
+The rest of this README is upstream's; this section is the list of what the
+fork changes, so the delta is visible at a glance and easy to send back
+upstream.
+
+- **Third usage row for the per-model weekly limit (Fable).** Claude Code
+  meters some models on their own weekly window in addition to the account-wide
+  one (the "Weekly · Fable" bar in `/usage`). When the daemon reports it, the
+  usage screen switches to a three-row layout: Current, Weekly, and the
+  model-scoped row, with the reset time beside each pill and a smaller status
+  line. Accounts without a scoped window, and Enterprise accounts, keep the
+  upstream two-row screen.
+
+  <img src="screenshots/usage-three-rows.png" width="240" alt="Three-row usage screen (simulator render)">
+
+- **Daemons read the OAuth usage endpoint.** All three daemons (Linux bash,
+  macOS/Linux Python, Windows Python) now call `GET /api/oauth/usage`, the same
+  source Claude Code's `/usage` screen uses. It returns the 5h/7d windows plus
+  the per-model rows in one free call, so the once-a-minute Haiku request for
+  rate-limit headers is gone for Pro/Max accounts. That header probe is kept as
+  the fallback and still serves Enterprise. Payload gains optional
+  `m`/`mr`/`ml` keys; see [BLE protocol](#ble-protocol).
+- **macOS daemon token selection.** A stale `~/.claude/.credentials.json` no
+  longer shadows a fresher token in the Keychain; whichever expires later wins.
+- **Simulator QA hooks.** `SIM_BOOT_SCREEN=usage` for headless screenshots
+  without editing `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides
+  to check the 368×448 and 240×240 layouts without hardware. See
+  [`SIM-USAGE.md`](SIM-USAGE.md).
+
+Staying in sync: `git fetch upstream && git merge upstream/main` (the fork
+tracks upstream `main` with no rebases, so merges stay clean).
+
 ## Screens
 
 The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash.
@@ -17,7 +52,7 @@ The device boots into the splash. Tap the screen anywhere to switch to the Usage
 |              Splash               |              Usage              |
 | :-------------------------------: | :-----------------------------: |
 | ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |
-|   Splash; touch-toggle anytime    | Session and weekly utilization  |
+|   Splash; touch-toggle anytime    | Session and weekly utilization (plus a per-model row when reported, see [About this fork](#about-this-fork)) |
 
 While the splash is up, the middle (PWR) button cycles animations. **Hold the power button for 3 seconds, then release, to put the device into pairing mode** — this clears the saved Bluetooth bond and re-advertises. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
 
