@@ -11,6 +11,15 @@ scenario data in `firmware/sim/`.
 
 ```bash
 sudo apt install libsdl2-dev        # one-time (macOS: brew install sdl2)
+./sim.sh                            # builds if needed, then runs
+```
+
+`./sim.sh --build` forces a rebuild after firmware edits, `--usage` boots
+straight to the usage view, `--scenario FILE` plays another `.jsonl`, and
+`--size 368x448` (or `240x240`) builds for another panel geometry. The
+manual equivalent is:
+
+```bash
 pio run -d firmware -e sim
 cd firmware && .pio/build/sim/program
 ```

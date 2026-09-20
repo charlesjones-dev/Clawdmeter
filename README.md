@@ -38,9 +38,11 @@ upstream.
   config choose the key each button sends (single keys or chords such as
   `ctrl+shift+p`); the install scripts prompt for them. Upstream hardcodes
   Space and Shift+Tab. See [Physical buttons](#physical-buttons).
-- **Simulator QA hooks.** `SIM_BOOT_SCREEN=usage` for headless screenshots
-  without editing `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides
-  to check the 368×448 and 240×240 layouts without hardware. See
+- **Simulator launcher and QA hooks.** `./sim.sh` builds and runs the desktop
+  simulator in one step (`--usage`, `--scenario`, `--size 368x448`).
+  `SIM_BOOT_SCREEN=usage` enables headless screenshots without editing
+  `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides check the
+  368×448 and 240×240 layouts without hardware. See
   [`SIM-USAGE.md`](SIM-USAGE.md).
 
 Staying in sync: `git fetch upstream && git merge upstream/main` (the fork

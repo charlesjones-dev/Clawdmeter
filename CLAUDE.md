@@ -153,7 +153,8 @@ Device path differs by OS: `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM0` on Linux
 
 ```bash
 sudo apt install libsdl2-dev   # once (macOS: brew install sdl2)
-pio run -d firmware -e sim && (cd firmware && .pio/build/sim/program)
+./sim.sh            # builds if needed, then runs (--build, --usage, --scenario F, --size 368x448)
+# manual: pio run -d firmware -e sim && (cd firmware && .pio/build/sim/program)
 ```
 
 An SDL2 window stands in for the 480×480 panel; the **full firmware loop runs
