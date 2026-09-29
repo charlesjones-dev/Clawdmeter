@@ -50,13 +50,18 @@ upstream.
   `SIM_BOOT_SCREEN=usage` enables headless screenshots without editing
   `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides check the
   368×448 and 240×240 layouts without hardware.
-- **Windows uninstaller and flashing steps.** `uninstall-windows.ps1` undoes
-  `install-windows.ps1` (stops the tray, removes autostart, deletes the venv
-  and `%LOCALAPPDATA%\Clawdmeter`); upstream only documents deleting the
-  autostart entry. The Windows flash section now covers installing PlatformIO,
-  finding the COM port, and download mode, and drops upstream's advice to run
-  `pio run` without `-e`, which builds every env including the sim. See
-  [Windows installation](#windows-installation).
+- **Uninstall scripts for macOS and Windows.** `uninstall-mac.sh` undoes
+  `install-mac.sh` (unloads the LaunchAgent, deletes the venv, logs, and
+  `~/.config/claude-usage-monitor`, plus the simulator app if installed;
+  `--dry-run` previews). `uninstall-windows.ps1` undoes `install-windows.ps1`
+  (stops the tray, removes autostart, deletes the venv and
+  `%LOCALAPPDATA%\Clawdmeter`). Upstream has no uninstallers, only the manual
+  `launchctl unload` and `reg delete` commands. See
+  [macOS](#uninstall) and [Windows](#uninstall-1).
+- **Windows flashing steps.** The Windows flash section covers installing
+  PlatformIO, finding the COM port, and download mode, and drops upstream's
+  advice to run `pio run` without `-e`, which builds every env including the
+  sim. See [Windows installation](#windows-installation).
 
 Staying in sync: `git fetch upstream && git merge upstream/main` (the fork
 tracks upstream `main` with no rebases, so merges stay clean).
@@ -133,6 +138,20 @@ tail -F ~/Library/Logs/claude-usage-daemon.out.log                          # li
 launchctl unload ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist  # stop
 launchctl load -w ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist # start
 ```
+
+### Uninstall
+
+```bash
+./uninstall-mac.sh --dry-run   # show what would be removed
+./uninstall-mac.sh
+```
+
+This stops the daemon, removes the LaunchAgent and its logs, and deletes
+`daemon/.venv` and `~/.config/claude-usage-monitor` (config, cached BLE
+address). It also removes `~/Applications/Clawdmeter.app` if you installed the
+simulator app with `./make-app.sh --install`. It's safe to re-run. It leaves
+the repo, your Claude Code login, blueutil, and the Bluetooth pairing alone; to
+unpair, use **System Settings → Bluetooth → Clawdmeter → Forget This Device**.
 
 ## Linux installation
 
