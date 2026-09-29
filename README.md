@@ -50,6 +50,13 @@ upstream.
   `SIM_BOOT_SCREEN=usage` enables headless screenshots without editing
   `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides check the
   368×448 and 240×240 layouts without hardware.
+- **Windows uninstaller and flashing steps.** `uninstall-windows.ps1` undoes
+  `install-windows.ps1` (stops the tray, removes autostart, deletes the venv
+  and `%LOCALAPPDATA%\Clawdmeter`); upstream only documents deleting the
+  autostart entry. The Windows flash section now covers installing PlatformIO,
+  finding the COM port, and download mode, and drops upstream's advice to run
+  `pio run` without `-e`, which builds every env including the sim. See
+  [Windows installation](#windows-installation).
 
 Staying in sync: `git fetch upstream && git merge upstream/main` (the fork
 tracks upstream `main` with no rebases, so merges stay clean).
@@ -180,11 +187,27 @@ Runs natively on Windows — no WSL required. A system-tray app polls your usage
 
 ### Flash the firmware
 
+There's no flash helper on Windows; call PlatformIO directly. Install it once
+with `python -m pip install -U platformio` (if `pio` isn't on PATH afterwards,
+use `python -m platformio` in its place).
+
 ```powershell
-pio run -d firmware -e waveshare_amoled_216 -t upload --upload-port COM5   # use your device's COM port
+pio device list                                                            # find the board's COM port
+pio run -d firmware -e waveshare_amoled_216 -t upload --upload-port COM5   # use your board's env and COM port
 ```
 
-Run `pio run -d firmware` with no env to see the available board envs.
+The board shows up as "USB Serial Device (COMx)" or "USB JTAG/serial debug
+unit" (the S3/C6 native USB needs no driver). To list the board envs, run
+`Select-String '^\[env:' firmware\platformio.ini`. Don't run `pio run` without
+`-e`: that builds every env, including the desktop simulator, which fails on
+Windows without SDL2. The first build downloads the toolchain and takes several
+minutes.
+
+If the upload can't connect, close any serial monitor holding the port. If it
+still fails, put the board in download mode (hold **BOOT**, tap **RESET**,
+release **BOOT**) and check `pio device list` again, since the COM number can
+change. "This chip is ESP32-C6, not ESP32-S3" means you picked an S3 env for a
+C6 board; use the `_c6` env.
 
 ### Pair the device
 
@@ -230,6 +253,20 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 | `token expired` toast / `API HTTP 401` | Re-run `claude login`, then restart the daemon.          |
 | `Connection failed`                    | Toggle Windows Bluetooth off/on in Settings.             |
 | `Warning: running under Linux/WSL`     | Run from a native PowerShell window, not a WSL shell.    |
+
+### Uninstall
+
+From the repo root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File uninstall-windows.ps1
+```
+
+This stops the tray app, removes the login-autostart entry, and deletes the
+repo's `.venv` and `%LOCALAPPDATA%\Clawdmeter` (config, logs). It's safe to
+re-run. It leaves the repo, your Claude Code login, and the Bluetooth pairing
+alone; to unpair, use **Settings → Bluetooth & devices → Clawdmeter → Remove
+device**.
 
 ## How it works
 

@@ -12,6 +12,7 @@
 #
 # To disable autostart later: right-click the tray icon -> uncheck "Start at login"
 # Or remove manually: reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
+# To remove everything this script set up: uninstall-windows.ps1
 #
 # Security: this script downloads nothing from the internet. It installs only
 # the packages listed in the in-repo daemon\requirements-windows.txt.
@@ -151,7 +152,7 @@ if ($Interactive) {
         }
     }
 } else {
-    Log "Non-interactive session - skipping button configuration (edit $ConfigFile: button_left / button_right)"
+    Log "Non-interactive session - skipping button configuration (edit ${ConfigFile}: button_left / button_right)"
 }
 
 # ------------------------------------------------------------------
