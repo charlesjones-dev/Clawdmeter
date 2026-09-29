@@ -44,4 +44,26 @@ check "parser prints nothing on Enterprise body" "$ent" ""
 printf 'not json' | python3 -c "$USAGE_PY" "$now" >/dev/null 2>&1; rc=$?
 check "parser exits 1 on non-JSON" "$rc" "1"
 
+# fetch_usage_fragment must hand curl the token on stdin (-K -), never in argv,
+# where any local user can read it via ps or /proc. A curl stub records both.
+eval "$(awk '$0 ~ "^fetch_usage_fragment\\(\\) \\{"{f=1} f{print} f&&/^\}/{exit}' "$DAEMON")"
+CURL_LOG="$(mktemp)"
+curl() {   # %q keeps -w's embedded newline from splitting the ARGV line
+    local a prev="" reads_stdin=false
+    for a in "$@"; do [ "$prev" = "-K" ] && [ "$a" = "-" ] && reads_stdin=true; prev="$a"; done
+    {   # like real curl, only read stdin when told to (-K -), so a regression can't hang
+        printf 'ARGV:'; printf ' %q' "$@"; printf '\n'
+        $reads_stdin && sed 's/^/STDIN:/'
+    } > "$CURL_LOG"
+    cat "$FIXTURE"; printf '\n200'
+}
+frag=$(fetch_usage_fragment "sk-ant-oat01-SECRET"); rc=$?
+check "fetch: exits 0 on a 200"                  "$rc" "0"
+check "fetch: fragment parsed from the body"     "${frag:0:4}" '"s":'
+check "fetch: token absent from curl argv"       "$(grep -c '^ARGV:.*SECRET' "$CURL_LOG")" "0"
+check "fetch: curl reads its config from stdin"  "$(grep -c '^ARGV:.* -K - ' "$CURL_LOG")" "1"
+check "fetch: bearer header arrives on stdin" \
+    "$(grep '^STDIN:' "$CURL_LOG")" 'STDIN:header = "Authorization: Bearer sk-ant-oat01-SECRET"'
+rm -f "$CURL_LOG"; unset -f curl
+
 exit $fail
