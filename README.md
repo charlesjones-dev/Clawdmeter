@@ -50,14 +50,16 @@ upstream.
   `SIM_BOOT_SCREEN=usage` enables headless screenshots without editing
   `main.cpp`, and build-time `LCD_WIDTH`/`LCD_HEIGHT` overrides check the
   368×448 and 240×240 layouts without hardware.
-- **Uninstall scripts for macOS and Windows.** `uninstall-mac.sh` undoes
+- **Uninstall scripts for every platform.** `uninstall-mac.sh` undoes
   `install-mac.sh` (unloads the LaunchAgent, deletes the venv, logs, and
-  `~/.config/claude-usage-monitor`, plus the simulator app if installed;
-  `--dry-run` previews). `uninstall-windows.ps1` undoes `install-windows.ps1`
-  (stops the tray, removes autostart, deletes the venv and
-  `%LOCALAPPDATA%\Clawdmeter`). Upstream has no uninstallers, only the manual
-  `launchctl unload` and `reg delete` commands. See
-  [macOS](#uninstall) and [Windows](#uninstall-1).
+  `~/.config/claude-usage-monitor`, plus the simulator app if installed).
+  `uninstall.sh` undoes `install.sh` (disables the systemd user service,
+  deletes its unit file and `~/.config/claude-usage-monitor`). Both take
+  `--dry-run`. `uninstall-windows.ps1` undoes `install-windows.ps1` (stops the
+  tray, removes autostart, deletes the venv and `%LOCALAPPDATA%\Clawdmeter`).
+  Upstream has no uninstallers, only the manual `launchctl unload` and
+  `reg delete` commands. See [macOS](#uninstall), [Linux](#uninstall-1), and
+  [Windows](#uninstall-2).
 - **Windows flashing steps.** The Windows flash section covers installing
   PlatformIO, finding the COM port, and download mode, and drops upstream's
   advice to run `pio run` without `-e`, which builds every env including the
@@ -192,6 +194,19 @@ systemctl --user start claude-usage-daemon
 Check status: `systemctl --user status claude-usage-daemon`
 
 View logs: `journalctl --user -u claude-usage-daemon -f`
+
+### Uninstall
+
+```bash
+./uninstall.sh --dry-run   # show what would be removed
+./uninstall.sh
+```
+
+This stops and disables the service, deletes its unit file from
+`~/.config/systemd/user/`, and deletes `~/.config/claude-usage-monitor`
+(config, cached BLE address). It's safe to re-run. It leaves the repo, your
+Claude Code login, and the Bluetooth pairing alone; it prints the
+`bluetoothctl remove <MAC>` command to unpair.
 
 ## Windows installation
 
