@@ -129,7 +129,7 @@ read_heartbeat_interval() {
 
 # Age a payload by $2 seconds: the "sr"/"wr"/"mr" reset countdowns (minutes;
 # "mr" is the model-scoped weekly row) tick down toward 0 and the optional
-# clock epoch "t" advances. Everything else (usage %, status, chime permission
+# clock epochs "t" and "lt" advance. Everything else (usage %, status, chime permission
 # flag) is left as fetched. Echoes the adjusted JSON.
 age_payload() {
     python3 - "$1" "$2" <<'PYEOF'
@@ -138,8 +138,9 @@ d = json.loads(sys.argv[1]); secs = int(sys.argv[2]); mins = secs // 60
 for k in ("sr", "wr", "mr"):
     if isinstance(d.get(k), int) and d[k] > 0:
         d[k] = max(d[k] - mins, 0)
-if isinstance(d.get("t"), int) and d["t"] > 0:
-    d["t"] += secs
+for k in ("t", "lt"):
+    if isinstance(d.get(k), int) and d[k] > 0:
+        d[k] += secs
 print(json.dumps(d, separators=(",", ":")))
 PYEOF
 }
@@ -438,6 +439,149 @@ button_fragment() {
     printf '%s' "$frag"
 }
 
+# --- Work-hours schedule ------------------------------------------------------
+# `work_hours` / `work_days` drive two device features: outside them the device
+# switches to the splash (Clawd animations) after `screensaver_after` minutes
+# without a touch or button press, and the panel runs at `off_hours_brightness`
+# (default dimmest) vs `work_brightness` (default brightest) inside them. The
+# parser reads those keys from the config file named in argv[1] and prints
+# `,"sch":[start,end,days,saver_secs,work_lvl,off_lvl]` (always present, so
+# clearing the settings reaches the device too), plus `,"lt":<local wall-clock
+# epoch>` when any of it is active: the device runs the schedule on its own
+# clock seeded by it, so it holds overnight with the host asleep. Same parsing
+# as the Python daemons.
+read -r -d '' SCHEDULE_PY <<'PYEOF'
+import re, sys, time
+DAY_NAMES = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+DAY_ALIASES = {"daily": 0x7F, "everyday": 0x7F, "every day": 0x7F, "all": 0x7F,
+               "weekdays": 0x3E, "weekends": 0x41, "weekend": 0x41}
+
+def read_config_value(key):
+    try:
+        found = None
+        with open(sys.argv[1]) as f:
+            for line in f.read().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip().lower() == key:
+                    found = v.strip()
+        return found
+    except OSError:
+        return None
+
+def parse_screensaver_after(spec):
+    s = (spec or "").strip().lower()
+    if s in ("", "off", "none", "disabled"):
+        return 0
+    m = re.fullmatch(r"(\d+)\s*(?:m|min|mins|minutes?)?", s)
+    return min(int(m.group(1)), 1440) if m else None
+
+def parse_time_of_day(spec):
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", spec.strip().lower())
+    if not m:
+        return None
+    h, mins, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if mins > 59:
+        return None
+    if ampm:
+        if not 1 <= h <= 12:
+            return None
+        h = h % 12 + (12 if ampm == "pm" else 0)
+    elif h == 24 and mins == 0:
+        return 1440
+    elif h > 23:
+        return None
+    return h * 60 + mins
+
+def parse_work_hours(spec):
+    s = (spec or "").strip().lower()
+    if s in ("", "none", "off"):
+        return (0, 0)
+    parts = re.split(r"\s*(?:-|–|\bto\b)\s*", s)
+    if len(parts) != 2:
+        return None
+    start, end = parse_time_of_day(parts[0]), parse_time_of_day(parts[1])
+    if start is None or end is None or start % 1440 == end:
+        return None
+    return (start % 1440, end)
+
+def day_index(name):
+    if len(name) < 3:
+        return None
+    for i, full in enumerate(DAY_NAMES):
+        if full.startswith(name):
+            return i
+    return None
+
+def parse_work_days(spec):
+    s = (spec or "").strip().lower()
+    if not s:
+        return 0x7F
+    mask = 0
+    for tok in s.split(","):
+        tok = tok.strip()
+        if tok in DAY_ALIASES:
+            mask |= DAY_ALIASES[tok]
+            continue
+        ends = [day_index(t) for t in re.split(r"\s*-\s*", tok)]
+        if len(ends) > 2 or None in ends:
+            return None
+        d = ends[0]
+        while True:
+            mask |= 1 << d
+            if d == ends[-1]:
+                break
+            d = (d + 1) % 7
+    return mask
+
+def parse_brightness(spec, default):
+    s = (spec or "").strip().lower()
+    if not s:
+        return default
+    if s in ("manual", "off", "none"):
+        return 0
+    if s in ("min", "lowest", "dimmest"):
+        return 1
+    if s in ("max", "highest", "brightest"):
+        return 4
+    return int(s) if s in ("1", "2", "3", "4") else None
+
+SCHEDULE_KEYS = (
+    ("work_hours", parse_work_hours),
+    ("work_days", parse_work_days),
+    ("screensaver_after", parse_screensaver_after),
+    ("work_brightness", lambda s: parse_brightness(s, 4)),
+    ("off_hours_brightness", lambda s: parse_brightness(s, 1)),
+)
+
+v = {}
+for key, parse in SCHEDULE_KEYS:
+    raw = read_config_value(key)
+    v[key] = parse(raw)
+    if v[key] is None:
+        print(f"Ignoring unrecognized {key} = '{raw}'", file=sys.stderr)
+if v["work_hours"] is None or v["work_days"] is None:
+    sch = [0, 0, 0x7F, 0, 0, 0]
+else:
+    start, end = v["work_hours"]
+    has_hours = start != end
+    sch = [start, end, v["work_days"], (v["screensaver_after"] or 0) * 60,
+           (v["work_brightness"] or 0) if has_hours else 0,
+           (v["off_hours_brightness"] or 0) if has_hours else 0]
+frag = ',"sch":[' + ",".join(map(str, sch)) + "]"
+if sch[0] != sch[1] or sch[3]:
+    frag += ',"lt":%d' % (int(time.time()) + time.localtime().tm_gmtoff)
+print(frag)
+PYEOF
+
+# Payload fragment for the work-hours schedule (see SCHEDULE_PY). Warnings go
+# to stderr (the journal) so they can't leak into the payload.
+schedule_fragment() {
+    python3 -c "$SCHEDULE_PY" "$CONFIG_FILE" || printf ',"sch":[0,0,127,0,0,0]'
+}
+
 # --- OAuth usage endpoint (primary source) ----------------------------------
 # GET https://api.anthropic.com/api/oauth/usage is what Claude Code's own /usage
 # screen reads: 5h + 7d windows as 0-100 percentages with ISO reset times, plus a
@@ -543,10 +687,14 @@ build_payload_for_token() {
     local btn_fragment
     btn_fragment=$(button_fragment)
 
+    # Work-hours schedule: screensaver + brightness (always present; see SCHEDULE_PY).
+    local sch_fragment
+    sch_fragment=$(schedule_fragment)
+
     # Primary: OAuth usage endpoint (Pro/Max — includes the per-model weekly row).
     local usage_frag
     if usage_frag=$(fetch_usage_fragment "$token") && [ -n "$usage_frag" ]; then
-        printf '{%s%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment" "$btn_fragment"
+        printf '{%s%s%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment" "$btn_fragment" "$sch_fragment"
         return 0
     fi
 
@@ -581,13 +729,13 @@ build_payload_for_token() {
         s5h_util=${s5h_util:-0}; s5h_reset=${s5h_reset:-0}
         s7d_util=${s7d_util:-0}; s7d_reset=${s7d_reset:-0}
         s5h_status=${s5h_status:-unknown}
-        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" \
+        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" -v sch="$sch_fragment" \
             'BEGIN {
                 sp = sprintf("%.0f", u5 * 100);
                 sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
                 wp = sprintf("%.0f", u7 * 100);
                 wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
-                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm, btn;
+                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm, btn, sch;
             }')
     else
         # Enterprise account — spending-limit model
@@ -609,7 +757,7 @@ rd = f"{dt_end.strftime('%b')} {dt_end.day}"
 print(json.dumps({"tp": tp, "pd": pd_days, "rd": rd}))
 PYEOF
 )
-        payload=$(awk -v ou="$overage_util" -v or_="$overage_reset" -v st="$status" -v now="$now" -v pi="$period_info" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" \
+        payload=$(awk -v ou="$overage_util" -v or_="$overage_reset" -v st="$status" -v now="$now" -v pi="$period_info" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" -v sch="$sch_fragment" \
             'BEGIN {
                 sp = sprintf("%.0f", ou * 100);
                 sr = (or_ - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
@@ -618,7 +766,7 @@ PYEOF
                 match(pi, /"tp": *([0-9]+)/, a); if (RSTART) tp = a[1];
                 match(pi, /"pd": *([0-9]+)/, b); if (RSTART) pd = b[1];
                 match(pi, /"rd": *"([^"]+)"/, c); if (RSTART) rd = c[1];
-                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s%s,\"ok\":true}", sp, sr, st, tp, pd, rd, clk, chm, btn;
+                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s%s%s,\"ok\":true}", sp, sr, st, tp, pd, rd, clk, chm, btn, sch;
             }')
     fi
 

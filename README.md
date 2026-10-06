@@ -67,6 +67,17 @@ upstream.
   PlatformIO, finding the COM port, and download mode, and drops upstream's
   advice to run `pio run` without `-e`, which builds every env including the
   sim. See [Windows installation](#windows-installation).
+- **Work-hours schedule: brightness and an off-hours screensaver.** Set
+  `work_hours` (e.g. `9am-5pm`, optionally `work_days = mon-fri`) in the
+  daemon config and the screen runs at its brightest level during work hours
+  and its dimmest outside them (`work_brightness` / `off_hours_brightness`;
+  a PWR-button change holds until the next switch). Add
+  `screensaver_after = 10` and, off-hours, the device also switches from Usage
+  to the Clawd animations after 10 minutes without a touch or button press,
+  returning to Usage when work hours start. The device runs the schedule on
+  its own clock, so it keeps working while the computer sleeps. Upstream
+  switches screens only on a tap and brightness only with the PWR button. See
+  [Screens](#screens) and [`daemon/config.example`](daemon/config.example).
 
 Staying in sync: `git fetch upstream && git merge upstream/main` (the fork
 tracks upstream `main` with no rebases, so merges stay clean).
@@ -74,6 +85,8 @@ tracks upstream `main` with no rebases, so merges stay clean).
 ## Screens
 
 The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash.
+
+**Work hours:** set `work_hours = 9am-5pm` (optionally `work_days = mon-fri`) in the daemon config and the screen runs at full brightness during work hours and at its dimmest outside them; `work_brightness` / `off_hours_brightness` change the levels. Add `screensaver_after = 10` and, outside work hours, the device also flips to the splash by itself after 10 minutes without a touch or button press. During work hours it never does, and a splash it put up on its own goes back to Usage when work hours start. See [`daemon/config.example`](daemon/config.example).
 
 |              Splash               |              Usage              |
 | :-------------------------------: | :-----------------------------: |
@@ -353,6 +366,7 @@ JSON payload format (written to RX):
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
 Optional: `m` / `mr` / `ml` = a model-scoped weekly window (utilization %, reset minutes, server label — Fable today). When present the device shows a third row; older daemons never send it and the two-row layout is unchanged.
 `bl` / `br` = side-button key bindings as `[HID usage id, modifier bits]` (e.g. `[44,0]` = Space, `[43,2]` = Shift+Tab). The device persists the last mapping in NVS.
+`sch` = work-hours schedule as `[work start, work end, work-days mask, screensaver idle seconds, work brightness, off-hours brightness]`: start/end are minutes since local midnight (equal = no work hours), the mask has bit 0 = Sunday, idle seconds 0 = no screensaver, and brightness is a PWR-button level 1–4 (0 = leave alone). E.g. `[540,1020,62,600,4,1]` = 9:00–17:00 Mon–Fri, screensaver after 10 min, brightest at work, dimmest off-hours. `lt` = local wall-clock epoch, sent while any of it is active; the device advances it on its own clock between payloads. A payload without `sch` keeps the last settings.
 
 The daemons read these from `GET https://api.anthropic.com/api/oauth/usage` (the same endpoint Claude Code's `/usage` screen uses — one free call, no inference). Enterprise accounts have no 5h window there, so they fall back to the rate-limit headers of a minimal `/v1/messages` probe, as before.
 

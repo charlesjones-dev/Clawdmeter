@@ -13,6 +13,7 @@
 #include "idle_cfg.h"
 #include "brightness.h"
 #include "keymap.h"
+#include "schedule.h"
 
 #include "hal/board_caps.h"
 #include "hal/display_hal.h"
@@ -64,6 +65,7 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     bool pressed;
     touch_hal_read(&x, &y, &pressed);
     const bool raw_pressed = pressed;
+    if (raw_pressed) schedule_note_input();
 
     if (IDLE_WAKE_ON_TOUCH) {
         static bool touch_was = false;
@@ -136,6 +138,22 @@ static bool parse_json(const char* json, UsageData* out) {
     }
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
+    // Work-hours schedule: "sch" = [work start, work end (minutes since local
+    // midnight), work-days mask, screensaver idle seconds (0 = off), work-hours
+    // brightness, off-hours brightness (1 = dimmest, 0 = leave alone)]; "lt" =
+    // local wall-clock epoch. Absent (older daemon, {"ok":false} beat) → keep
+    // the last settings.
+    JsonArray sch = doc["sch"].as<JsonArray>();
+    out->has_schedule = !sch.isNull();
+    if (out->has_schedule) {
+        out->work_start    = sch[0] | 0;
+        out->work_end      = sch[1] | 0;
+        out->work_days     = sch[2] | 0x7F;
+        out->saver_after_s = sch[3] | 0;
+        out->bright_work   = sch[4] | 0;
+        out->bright_off    = sch[5] | 0;
+    }
+    out->local_epoch = doc["lt"] | 0L;
     out->ok = doc["ok"] | false;
     out->valid = true;
     return true;
@@ -305,6 +323,7 @@ static void pair_tick(void) {
 
 void loop() {
     idle_tick();
+    schedule_tick();
     lv_timer_handler();
     ui_tick_anim();
     ble_tick();
@@ -333,6 +352,7 @@ void loop() {
         bool primary_now = input_hal_is_held(INPUT_BTN_PRIMARY);
         if (primary_now != primary_was) {
             if (primary_now) {
+                schedule_note_input();
                 if (idle_consume_wake_press()) primary_wake_swallowed = true;
                 else {
                     uint8_t k, m; keymap_get(KEYMAP_LEFT, &k, &m);   // default: HID Space
@@ -351,6 +371,7 @@ void loop() {
             bool secondary_now = input_hal_is_held(INPUT_BTN_SECONDARY);
             if (secondary_now != secondary_was) {
                 if (secondary_now) {
+                    schedule_note_input();
                     if (idle_consume_wake_press()) secondary_wake_swallowed = true;
                     else {
                         uint8_t k, m; keymap_get(KEYMAP_RIGHT, &k, &m);   // default: Shift+Tab
@@ -365,6 +386,7 @@ void loop() {
         }
 
         if (power_hal_pwr_pressed()) {
+            schedule_note_input();
             if (!idle_consume_wake_press()) {
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
@@ -398,6 +420,7 @@ void loop() {
     if (ble_has_data()) {
         if (parse_json(ble_get_data(), &usage)) {
             keymap_apply(&usage);   // adopt/persist side-button bindings if the daemon sent them
+            schedule_apply(&usage);     // work hours: screensaver + brightness, local time
             int g_before = usage_rate_group();
             bool session_reset = usage_rate_sample(usage.session_pct);
             int g_after = usage_rate_group();

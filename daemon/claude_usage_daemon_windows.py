@@ -283,6 +283,158 @@ def add_button_fields(payload: dict) -> None:
     payload["br"] = list(read_button_setting("right"))
 
 
+# --- Work-hours schedule --------------------------------------------------------
+# `work_hours` / `work_days` drive two device features: outside them the device
+# switches to the splash (Clawd animations) after `screensaver_after` minutes
+# without a touch or button press, and the panel runs at `off_hours_brightness`
+# (default dimmest) vs `work_brightness` (default brightest) inside them. The
+# device runs the schedule on its own clock (seeded by "lt"), so it holds
+# overnight with the host asleep. Same parsing as the other daemons
+# (SCHEDULE_PY in the bash daemon).
+DAY_NAMES = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+DAY_ALIASES = {"daily": 0x7F, "everyday": 0x7F, "every day": 0x7F, "all": 0x7F,
+               "weekdays": 0x3E, "weekends": 0x41, "weekend": 0x41}
+
+
+def parse_screensaver_after(spec) -> int | None:
+    """Minutes without input: '10' / '10m' / '10 min' -> 10, capped at 1440;
+    '' / 'off' / '0' -> 0 (disabled). Unrecognized -> None."""
+    s = (spec or "").strip().lower()
+    if s in ("", "off", "none", "disabled"):
+        return 0
+    m = re.fullmatch(r"(\d+)\s*(?:m|min|mins|minutes?)?", s)
+    return min(int(m.group(1)), 1440) if m else None
+
+
+def parse_time_of_day(spec: str) -> int | None:
+    """'9', '9:30', '17:00', '9am', '5:30 pm', '12am' -> minutes since midnight;
+    '24:00' -> 1440 (end of day). Unrecognized -> None."""
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", spec.strip().lower())
+    if not m:
+        return None
+    h, mins, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if mins > 59:
+        return None
+    if ampm:
+        if not 1 <= h <= 12:
+            return None
+        h = h % 12 + (12 if ampm == "pm" else 0)
+    elif h == 24 and mins == 0:
+        return 1440
+    elif h > 23:
+        return None
+    return h * 60 + mins
+
+
+def parse_work_hours(spec) -> tuple[int, int] | None:
+    """'9am-5pm' / '9:00 to 17:00' -> (540, 1020); an end before the start spans
+    midnight ('22:00-06:00'). '' / 'none' -> (0, 0): no work hours, so the
+    screensaver applies around the clock. Unrecognized -> None."""
+    s = (spec or "").strip().lower()
+    if s in ("", "none", "off"):
+        return (0, 0)
+    parts = re.split(r"\s*(?:-|–|\bto\b)\s*", s)
+    if len(parts) != 2:
+        return None
+    start, end = parse_time_of_day(parts[0]), parse_time_of_day(parts[1])
+    if start is None or end is None or start % 1440 == end:
+        return None
+    return (start % 1440, end)
+
+
+def _day_index(name: str) -> int | None:
+    """'sun' / 'Monday' / 'tues' -> 0 / 1 / 2; at least three letters."""
+    if len(name) < 3:
+        return None
+    for i, full in enumerate(DAY_NAMES):
+        if full.startswith(name):
+            return i
+    return None
+
+
+def parse_work_days(spec) -> int | None:
+    """Days the work hours apply, as a mask with bit 0 = Sunday (the firmware's
+    tm_wday): 'mon-fri' -> 0x3E; 'sat,sun'; 'fri-mon' wraps; 'weekdays',
+    'weekends'; '' / 'daily' -> every day. Unrecognized -> None."""
+    s = (spec or "").strip().lower()
+    if not s:
+        return 0x7F
+    mask = 0
+    for tok in s.split(","):
+        tok = tok.strip()
+        if tok in DAY_ALIASES:
+            mask |= DAY_ALIASES[tok]
+            continue
+        ends = [_day_index(t) for t in re.split(r"\s*-\s*", tok)]
+        if len(ends) > 2 or None in ends:
+            return None
+        d = ends[0]
+        while True:
+            mask |= 1 << d
+            if d == ends[-1]:
+                break
+            d = (d + 1) % 7
+    return mask
+
+
+def parse_brightness(spec, default: int) -> int | None:
+    """Device brightness level: '1'..'4' (dimmest..brightest), 'min' / 'max';
+    'manual' / 'off' -> 0 (leave it to the PWR button); '' -> default.
+    Unrecognized -> None."""
+    s = (spec or "").strip().lower()
+    if not s:
+        return default
+    if s in ("manual", "off", "none"):
+        return 0
+    if s in ("min", "lowest", "dimmest"):
+        return 1
+    if s in ("max", "highest", "brightest"):
+        return 4
+    return int(s) if s in ("1", "2", "3", "4") else None
+
+
+SCHEDULE_KEYS = (
+    ("work_hours", parse_work_hours),
+    ("work_days", parse_work_days),
+    ("screensaver_after", parse_screensaver_after),
+    ("work_brightness", lambda s: parse_brightness(s, 4)),
+    ("off_hours_brightness", lambda s: parse_brightness(s, 1)),
+)
+
+
+def read_schedule_setting() -> list[int]:
+    """[work start, work end (minutes since midnight; equal = no work hours),
+    work-days mask, screensaver idle seconds (0 = off), work-hours brightness,
+    off-hours brightness (1-4; 0 = leave alone)]. Brightness follows the
+    schedule only once work_hours is set. An unrecognized value disables what
+    it controls (logged once) rather than guessing: a bad work_hours or
+    work_days turns the whole schedule off."""
+    v = {}
+    for key, parse in SCHEDULE_KEYS:
+        raw = _read_config_value(key)
+        v[key] = parse(raw)
+        if v[key] is None:
+            _log_once(f"{key}-{raw}", f"Ignoring unrecognized {key} = '{raw}'")
+    if v["work_hours"] is None or v["work_days"] is None:
+        return [0, 0, 0x7F, 0, 0, 0]
+    start, end = v["work_hours"]
+    has_hours = start != end
+    return [start, end, v["work_days"], (v["screensaver_after"] or 0) * 60,
+            (v["work_brightness"] or 0) if has_hours else 0,
+            (v["off_hours_brightness"] or 0) if has_hours else 0]
+
+
+def add_schedule_fields(payload: dict) -> None:
+    """Always add "sch" so clearing the settings reaches the device too. When
+    any of it is active, also add "lt" = local wall-clock epoch, which the
+    device needs to tell work hours from off-hours (separate from the clock's
+    "t" so the title clock stays opt-in). Old firmware ignores both keys."""
+    sch = read_schedule_setting()
+    payload["sch"] = sch
+    if sch[0] != sch[1] or sch[3]:
+        payload["lt"] = int(time.time()) + time.localtime().tm_gmtoff
+
+
 _NOTED: set = set()
 
 
@@ -427,6 +579,7 @@ async def poll_api(token: str) -> dict | None:
                     add_chime_field(payload)   # adds "c":1 iff the config opts in
                     add_clock_fields(payload)  # adds "t" + "tf" iff the config opts in
                     add_button_fields(payload) # adds "bl"/"br" side-button key bindings
+                    add_schedule_fields(payload)  # adds "sch" (+ "lt")
                     return payload
                 _log_once("usage-no-5h", "Usage endpoint has no 5h window (Enterprise?); "
                                          "using rate-limit headers")
@@ -490,6 +643,7 @@ async def poll_api(token: str) -> dict | None:
     add_chime_field(payload)   # adds "c":1 iff the config opts in
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
     add_button_fields(payload)  # adds "bl"/"br" side-button key bindings
+    add_schedule_fields(payload)  # adds "sch" (+ "lt") work-hours screensaver/brightness
     return payload
 
 

@@ -67,6 +67,9 @@ check "age: clamps at 0, advances clock t by seconds, keeps chime flag and tf" \
 check "age: model-scoped reset mr ticks down too; m/ml and button keys untouched" \
     "$(age_payload '{"s":4,"sr":180,"w":18,"wr":5000,"m":32,"mr":5000,"ml":"Fable","bl":[44,0],"br":[43,2],"ok":true}' 600)" \
     '{"s":4,"sr":170,"w":18,"wr":4990,"m":32,"mr":4990,"ml":"Fable","bl":[44,0],"br":[43,2],"ok":true}'
+check "age: schedule local time lt advances like t; sch settings untouched" \
+    "$(age_payload '{"s":4,"sr":180,"sch":[540,1020,62,600,4,1],"lt":1790000000,"ok":true}' 245)" \
+    '{"s":4,"sr":176,"sch":[540,1020,62,600,4,1],"lt":1790000245,"ok":true}'
 check "age: unknown mr (-1) left alone" \
     "$(age_payload '{"s":4,"sr":180,"m":32,"mr":-1,"ok":true}' 600)" \
     '{"s":4,"sr":170,"m":32,"mr":-1,"ok":true}'

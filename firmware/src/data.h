@@ -21,6 +21,14 @@ struct UsageData {
     uint8_t key_right[2];    // same for the right button (boards without one ignore it)
     long clock_epoch;        // local wall-clock epoch (s) from daemon; 0 = not provided
     int  clock_fmt;          // 12 or 24 (hour format from daemon); defaults to 24
+    bool has_schedule;       // payload carried "sch" work-hours schedule settings
+    uint16_t work_start;     // work hours, minutes since local midnight (start == end: none)
+    uint16_t work_end;
+    uint8_t  work_days;      // days the work hours apply: bit 0 = Sunday … bit 6 = Saturday
+    uint32_t saver_after_s;  // off-hours inactivity before the screensaver, seconds; 0 = off
+    uint8_t  bright_work;    // brightness level in work hours, 1 = dimmest; 0 = leave alone
+    uint8_t  bright_off;     // same, off-hours
+    long local_epoch;        // "lt": local wall-clock epoch (s) for the schedule; 0 = absent
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };

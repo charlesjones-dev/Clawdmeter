@@ -56,3 +56,29 @@ clock = off
 # the device keeps the last mapping while unpaired.
 # button_left = space
 # button_right = shift+tab
+
+# Work hours. Set these and the device follows your day: the brightest screen
+# during work hours, the dimmest outside them, and (optionally) the Clawd
+# animations after a while without a touch. The device keeps its own clock, so
+# the schedule keeps running after your computer sleeps.
+# 24-hour or am/pm: 9:00-17:00, 9am-5pm, 22:00-06:00 (overnight).
+# work_hours = 9am-5pm
+# Days the work hours apply; other days count as off-hours all day.
+# Default every day. e.g. mon-fri, weekdays, mon,wed,fri
+# work_days = mon-fri
+
+# Screen brightness by schedule (only once work_hours is set). Levels are the
+# four the PWR button cycles through: 1 = dimmest ... 4 = brightest (also min /
+# max). manual = leave brightness to the PWR button. A PWR-button change holds
+# until the next start or end of work hours.
+# work_brightness = 4
+# off_hours_brightness = 1
+
+# Off-hours screensaver: outside work hours, switch from the Usage screen to the
+# Clawd animations after this many minutes without a touch or button press (tap
+# to bring Usage back). During work hours it never switches on its own, and if
+# it switched itself it returns to Usage when work hours start. Without
+# work_hours it applies around the clock.
+#   off = never switch on its own (default)
+#   N   = minutes without input, e.g. 10
+# screensaver_after = 10
