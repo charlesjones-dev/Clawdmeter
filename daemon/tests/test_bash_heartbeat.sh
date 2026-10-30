@@ -73,6 +73,9 @@ check "age: schedule local time lt advances like t; sch settings untouched" \
 check "age: unknown mr (-1) left alone" \
     "$(age_payload '{"s":4,"sr":180,"m":32,"mr":-1,"ok":true}' 600)" \
     '{"s":4,"sr":170,"m":32,"mr":-1,"ok":true}'
+check "age: Ultra payload (no s/sr) ticks wr/mr and adds no session keys" \
+    "$(age_payload '{"w":18,"wr":5000,"m":32,"mr":5000,"ml":"Fable","st":"allowed","acct":"pro","ok":true}' 600)" \
+    '{"w":18,"wr":4990,"m":32,"mr":4990,"ml":"Fable","st":"allowed","acct":"pro","ok":true}'
 check "age: enterprise payload untouched apart from sr" \
     "$(age_payload '{"s":99.5,"sr":61,"w":0,"wr":0,"st":"allowed","acct":"ent","tp":40,"pd":30,"rd":"Oct 1","ok":true}' 60)" \
     '{"s":99.5,"sr":60,"w":0,"wr":0,"st":"allowed","acct":"ent","tp":40,"pd":30,"rd":"Oct 1","ok":true}'

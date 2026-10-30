@@ -123,8 +123,8 @@ python daemon\claude_usage_daemon_windows.py
   Set `CLAWDMETER_BLE_ADDRESS=AA:BB:CC:DD:EE:FF` to pin the address and skip PnP lookup.
 - After `Connected`, the daemon polls the Anthropic API immediately and sends the first
   payload within a few seconds of connect (warm token path). With a valid, non-expired token
-  the device should leave its waiting screen and show session + weekly percentages within
-  about 10 seconds of launch.
+  the device should leave its waiting screen and show its usage bars (session and weekly,
+  or weekly only on an Ultra account) within about 10 seconds of launch.
 - The daemon then re-polls every 60 seconds while connected. If the device fires a refresh
   request (e.g., after a button press), an immediate re-poll occurs without waiting for the
   60-second interval.

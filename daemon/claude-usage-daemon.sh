@@ -589,8 +589,9 @@ schedule_fragment() {
 # appear in the rate-limit headers of a Haiku probe, so the headers can't feed a
 # third row. One free GET (no inference), same bearer token + oauth beta header.
 # The parser prints a payload *fragment* (`"s":..,"sr":..,...`) on stdout, or
-# exits 1 when the body has no 5h window (Enterprise) so the caller falls back
-# to the header probe below.
+# exits 1 when the body has no usage window at all (Enterprise) so the caller
+# falls back to the header probe below. The fragment carries only the windows
+# the account has (Ultra has no 5h window); the device hides the missing bars.
 read -r -d '' USAGE_PY <<'PYEOF'
 import sys, json, datetime
 now = float(sys.argv[1])
@@ -619,14 +620,18 @@ def mins(iso):
     m = (dt.timestamp() - now) / 60.0
     return int(round(m)) if m > 0 else 0
 
-fh = d.get("five_hour")
-s = pct(fh.get("utilization")) if isinstance(fh, dict) else None
-if s is None:
-    sys.exit(1)          # no 5h window -> Enterprise / unknown shape -> header probe
-sd = d.get("seven_day") if isinstance(d.get("seven_day"), dict) else {}
-w = pct(sd.get("utilization")) or 0
-frag = {"s": s, "sr": mins(fh.get("resets_at")), "w": w, "wr": mins(sd.get("resets_at")),
-        "st": "allowed" if s < 100 else "rejected", "acct": "pro"}
+def window(obj):
+    """(percent, reset minutes) of a `five_hour` / `seven_day` window, or None."""
+    p = pct(obj.get("utilization")) if isinstance(obj, dict) else None
+    return None if p is None else (p, mins(obj.get("resets_at")))
+
+frag = {}
+fh = window(d.get("five_hour"))
+if fh is not None:
+    frag["s"], frag["sr"] = fh
+sd = window(d.get("seven_day"))
+if sd is not None:
+    frag["w"], frag["wr"] = sd
 for row in d.get("limits") or []:
     if not isinstance(row, dict) or row.get("kind") != "weekly_scoped":
         continue
@@ -636,6 +641,10 @@ for row in d.get("limits") or []:
     if isinstance(name, str) and name.strip() and p is not None:
         frag["m"], frag["mr"], frag["ml"] = p, mins(row.get("resets_at")), name.strip()[:15]
         break
+if not frag:
+    sys.exit(1)          # no usage window -> Enterprise / unknown shape -> header probe
+first = next(frag[k] for k in ("s", "w", "m") if k in frag)
+frag["st"], frag["acct"] = ("allowed" if first < 100 else "rejected"), "pro"
 print(json.dumps(frag, separators=(",", ":"))[1:-1])   # strip braces -> fragment
 PYEOF
 
@@ -691,7 +700,7 @@ build_payload_for_token() {
     local sch_fragment
     sch_fragment=$(schedule_fragment)
 
-    # Primary: OAuth usage endpoint (Pro/Max — includes the per-model weekly row).
+    # Primary: OAuth usage endpoint (Pro/Max/Ultra, includes the per-model weekly row).
     local usage_frag
     if usage_frag=$(fetch_usage_fragment "$token") && [ -n "$usage_frag" ]; then
         printf '{%s%s%s%s%s,"ok":true}' "$usage_frag" "$clock_fragment" "$chime_fragment" "$btn_fragment" "$sch_fragment"
@@ -711,35 +720,42 @@ build_payload_for_token() {
         -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
         2>/dev/null) || return 1
 
-    local s5h_util overage_util overage_reset status
+    local s5h_util s7d_util overage_util overage_reset status
     s5h_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-5h-utilization" | tr -d '\r' | awk '{print $2}')
+    s7d_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-utilization" | tr -d '\r' | awk '{print $2}')
     overage_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-overage-utilization" | tr -d '\r' | awk '{print $2}')
     overage_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-overage-reset" | tr -d '\r' | awk '{print $2}')
     status=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-status" | tr -d '\r' | awk '{print $2}')
     status=${status:-unknown}
 
     local payload
-    if [ -n "$s5h_util" ]; then
-        # Pro/Max account — 5h/7d windows
-        local s7d_util s5h_reset s7d_reset s5h_status
+    if [ -n "$s5h_util" ] || [ -n "$s7d_util" ]; then
+        # Subscription account (Pro/Max/Ultra): 5h/7d windows. A window the
+        # account lacks (Ultra has no 5h) stays out of the payload, so the
+        # device hides its bar instead of showing 0%.
+        local s5h_reset s7d_reset s5h_status
         s5h_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-5h-reset" | tr -d '\r' | awk '{print $2}')
-        s7d_util=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-utilization" | tr -d '\r' | awk '{print $2}')
         s7d_reset=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-7d-reset" | tr -d '\r' | awk '{print $2}')
         s5h_status=$(echo "$headers" | grep -i "anthropic-ratelimit-unified-5h-status" | tr -d '\r' | awk '{print $2}')
-        s5h_util=${s5h_util:-0}; s5h_reset=${s5h_reset:-0}
-        s7d_util=${s7d_util:-0}; s7d_reset=${s7d_reset:-0}
-        s5h_status=${s5h_status:-unknown}
+        s5h_reset=${s5h_reset:-0}; s7d_reset=${s7d_reset:-0}
+        s5h_status=${s5h_status:-$status}
         payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" -v sch="$sch_fragment" \
             'BEGIN {
-                sp = sprintf("%.0f", u5 * 100);
-                sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
-                wp = sprintf("%.0f", u7 * 100);
-                wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
-                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm, btn, sch;
+                win = "";
+                if (u5 != "") {
+                    sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
+                    win = sprintf("\"s\":%.0f,\"sr\":%s,", u5 * 100, sr);
+                }
+                if (u7 != "") {
+                    wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
+                    win = win sprintf("\"w\":%.0f,\"wr\":%s,", u7 * 100, wr);
+                }
+                printf "{%s\"st\":\"%s\",\"acct\":\"pro\"%s%s%s%s,\"ok\":true}", win, st, clk, chm, btn, sch;
             }')
     else
-        # Enterprise account — spending-limit model
-        overage_util=${overage_util:-0}; overage_reset=${overage_reset:-0}
+        # Enterprise account: spending-limit model. Without an
+        # overage-utilization header "s" stays out: the device shows "No limits".
+        overage_reset=${overage_reset:-0}
         # Compute period info via python3 (awk lacks date arithmetic)
         local period_info
         period_info=$(python3 - "$now" "$overage_reset" <<'PYEOF'
@@ -759,14 +775,17 @@ PYEOF
 )
         payload=$(awk -v ou="$overage_util" -v or_="$overage_reset" -v st="$status" -v now="$now" -v pi="$period_info" -v clk="$clock_fragment" -v chm="$chime_fragment" -v btn="$btn_fragment" -v sch="$sch_fragment" \
             'BEGIN {
-                sp = sprintf("%.0f", ou * 100);
-                sr = (or_ - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
+                spend = "";
+                if (ou != "") {
+                    sr = (or_ - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
+                    spend = sprintf("\"s\":%.0f,\"sr\":%s,", ou * 100, sr);
+                }
                 # Extract tp, pd, rd from period_info JSON (simple regex)
                 tp = 0; pd = 30; rd = "";
                 match(pi, /"tp": *([0-9]+)/, a); if (RSTART) tp = a[1];
                 match(pi, /"pd": *([0-9]+)/, b); if (RSTART) pd = b[1];
                 match(pi, /"rd": *"([^"]+)"/, c); if (RSTART) rd = c[1];
-                printf "{\"s\":%s,\"sr\":%s,\"w\":0,\"wr\":0,\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s%s%s,\"ok\":true}", sp, sr, st, tp, pd, rd, clk, chm, btn, sch;
+                printf "{%s\"st\":\"%s\",\"acct\":\"ent\",\"tp\":%s,\"pd\":%s,\"rd\":\"%s\"%s%s%s%s,\"ok\":true}", spend, st, tp, pd, rd, clk, chm, btn, sch;
             }')
     fi
 
@@ -774,9 +793,16 @@ PYEOF
     return 0
 }
 
-# Extract the integer session % ("s") from a built payload, or 0.
-_payload_session_pct() {
-    echo "$1" | grep -o '"s":[0-9]*' | head -1 | cut -d: -f2
+# The integer % the plan selector watches for activity in a built payload: the
+# session window ("s"), or on an account without one (Ultra) the weekly ("w"),
+# then the model-scoped ("m"). Echoes 0 when the payload has none of them.
+_payload_activity_pct() {
+    local key pct
+    for key in s w m; do
+        pct=$(echo "$1" | grep -o "\"$key\":[0-9]*" | head -1 | cut -d: -f2)
+        [ -n "$pct" ] && { echo "$pct"; return 0; }
+    done
+    echo 0
 }
 
 # Poll every configured config dir, decide which plan is "active", and send
@@ -808,7 +834,7 @@ poll() {
         fi
         payload=$(build_payload_for_token "$token") || { log "API call failed for $dir"; continue; }
         [ -z "$payload" ] && continue
-        s=$(_payload_session_pct "$payload"); s=${s:-0}
+        s=$(_payload_activity_pct "$payload")
         cycle_payload["$dir"]="$payload"
         cycle_s["$dir"]="$s"
         # A rise in session % since the previous poll means this plan was just used.

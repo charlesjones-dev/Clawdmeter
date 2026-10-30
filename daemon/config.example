@@ -30,7 +30,8 @@
 # heartbeat_interval = 60
 
 # Play a sound on the device when your 5-hour session limit resets, so you know
-# you can use Claude again without watching the screen.
+# you can use Claude again without watching the screen. Accounts without a
+# 5-hour limit (Ultra) never chime.
 #   off = silent (default)
 #   on  = chime through the board speaker (boards with audio: AMOLED-2.16 / 1.8)
 chime = off

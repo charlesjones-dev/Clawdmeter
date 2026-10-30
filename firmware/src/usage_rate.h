@@ -10,6 +10,10 @@
 // true on the first sample after boot (no prior sample to compare against).
 bool usage_rate_sample(float session_pct);
 
+// Drop all samples (group falls back to idle). For payloads without a session
+// window, so a stale rate from an earlier account can't stick.
+void usage_rate_clear(void);
+
 // 0 = idle, 1 = normal, 2 = active, 3 = heavy.
 // Defaults to 0 when the buffer doesn't have enough samples yet.
 int usage_rate_group(void);

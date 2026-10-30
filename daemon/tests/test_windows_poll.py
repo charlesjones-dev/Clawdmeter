@@ -257,8 +257,9 @@ def test_reset_minutes_invalid_string_returns_zero(monkeypatch):
 # Test: missing headers default gracefully
 # ---------------------------------------------------------------------------
 
-def test_missing_utilization_headers_default_to_zero(monkeypatch):
-    """Missing utilization headers produce 0 (hdr default '0' -> pct('0') = 0)."""
+def test_missing_utilization_headers_leave_windows_out(monkeypatch):
+    """Missing utilization headers leave "s"/"w" out of the payload (the device
+    hides those bars) rather than reporting 0%."""
     now = time.time()
     # No utilization or status headers — only reset headers present
     mock_resp = _make_mock_response(
@@ -277,8 +278,9 @@ def test_missing_utilization_headers_default_to_zero(monkeypatch):
     with patch("httpx.AsyncClient", return_value=mock_client):
         payload = _run(poll_api("fake-token"))
 
-    assert payload["s"] == 0
-    assert payload["w"] == 0
+    for key in ("s", "sr", "w", "wr"):
+        assert key not in payload
+    assert payload["ok"] is True
 
 
 def test_missing_status_header_defaults_to_unknown(monkeypatch):

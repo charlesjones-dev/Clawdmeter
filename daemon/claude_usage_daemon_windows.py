@@ -497,40 +497,54 @@ def _scoped_weekly_window(limits) -> tuple[str, int, float | None] | None:
     return None
 
 
-def _payload_from_usage_json(data, now: float) -> dict | None:
-    """Pro/Max payload from a GET /api/oauth/usage body.
+def _usage_window(obj) -> tuple[int, float | None] | None:
+    """A top-level window of the usage body (`five_hour`, `seven_day`) as
+    (percent, reset_epoch), or None when the account has no such window: the key
+    is missing or null, or it carries no utilization. Ultra accounts have no
+    5-hour window."""
+    if not isinstance(obj, dict):
+        return None
+    pct = _pct_int(obj.get("utilization"))
+    if pct is None:
+        return None
+    return pct, _iso_to_epoch(obj.get("resets_at"))
 
-    Returns None when the body carries no 5h window (Enterprise spend-limit
-    accounts, or an unexpected shape) so the caller falls back to the
-    rate-limit-header probe, which still owns the Enterprise path.
+
+def _payload_from_usage_json(data, now: float) -> dict | None:
+    """Subscription (Pro/Max/Ultra) payload from a GET /api/oauth/usage body.
+
+    Carries only the windows the account has: "s"/"sr" (5-hour session),
+    "w"/"wr" (weekly, all models) and "m"/"mr"/"ml" (model-scoped weekly). A
+    window left out tells the device to hide that bar. Returns None when the
+    body has none of them (Enterprise spend-limit accounts, or an unexpected
+    shape) so the caller falls back to the rate-limit-header probe, which still
+    owns the Enterprise path.
     """
     if not isinstance(data, dict):
         return None
-    fh = data.get("five_hour")
-    if not isinstance(fh, dict):
-        return None
-    s = _pct_int(fh.get("utilization"))
-    if s is None:
-        return None
-    sd = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else {}
-    w = _pct_int(sd.get("utilization")) or 0
-    payload = {
-        "s": s,
-        "sr": _minutes_until(_iso_to_epoch(fh.get("resets_at")), now),
-        "w": w,
-        "wr": _minutes_until(_iso_to_epoch(sd.get("resets_at")), now),
-        # The headers' 5h-status has no JSON twin; derive the same vocabulary
-        # from the window itself (the firmware stores but never renders it).
-        "st": "allowed" if s < 100 else "rejected",
-        "acct": "pro",
-        "ok": True,
-    }
+    session = _usage_window(data.get("five_hour"))
+    weekly = _usage_window(data.get("seven_day"))
     scoped = _scoped_weekly_window(data.get("limits"))
+    if session is None and weekly is None and scoped is None:
+        return None
+    payload: dict = {}
+    if session is not None:
+        payload["s"] = session[0]                         # 5-hour session %
+        payload["sr"] = _minutes_until(session[1], now)   # ...its reset, minutes
+    if weekly is not None:
+        payload["w"] = weekly[0]                          # weekly %, all models
+        payload["wr"] = _minutes_until(weekly[1], now)    # ...its reset, minutes
     if scoped is not None:
         name, pct, reset_epoch = scoped
         payload["m"] = pct                                # model-scoped weekly %
         payload["mr"] = _minutes_until(reset_epoch, now)  # ...its reset, minutes
         payload["ml"] = name                              # ...its label ("Fable")
+    # The headers' 5h-status has no JSON twin; derive the same vocabulary from
+    # the account's first window (the firmware stores but never renders it).
+    first = next(payload[k] for k in ("s", "w", "m") if k in payload)
+    payload["st"] = "allowed" if first < 100 else "rejected"
+    payload["acct"] = "pro"
+    payload["ok"] = True
     return payload
 
 
@@ -581,8 +595,8 @@ async def poll_api(token: str) -> dict | None:
                     add_button_fields(payload) # adds "bl"/"br" side-button key bindings
                     add_schedule_fields(payload)  # adds "sch" (+ "lt")
                     return payload
-                _log_once("usage-no-5h", "Usage endpoint has no 5h window (Enterprise?); "
-                                         "using rate-limit headers")
+                _log_once("usage-no-windows", "Usage endpoint has no usage windows "
+                                              "(Enterprise?); using rate-limit headers")
             # Fallback / Enterprise: probe the messages API for its rate-limit headers.
             resp = await http.post(API_URL, headers=headers, json=API_BODY)
     except httpx.HTTPError as e:
@@ -612,34 +626,44 @@ async def poll_api(token: str) -> dict | None:
         mins = (r - now) / 60.0
         return int(round(mins)) if mins > 0 else 0
 
-    def pct(util: str) -> int:
+    def pct(name: str) -> int | None:
+        """A utilization header (0-1 fraction) as 0-100, or None when absent/garbled."""
         try:
-            return int(round(float(util) * 100))
+            return int(round(float(resp.headers.get(name) or "") * 100))
         except ValueError:
-            return 0
+            return None
 
-    if resp.headers.get("anthropic-ratelimit-unified-5h-utilization"):
-        payload = {
-            "s": pct(hdr("anthropic-ratelimit-unified-5h-utilization")),
-            "sr": reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset")),
-            "w": pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
-            "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
-            "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
-            "acct": "pro",
-            "ok": True,
-        }
+    # Subscription accounts (Pro/Max/Ultra) expose 5h/7d windows; Enterprise/
+    # overage use a single spending-limit model reported via overage-utilization.
+    # A window the account lacks (Ultra has no 5h) is left out of the payload, so
+    # the device hides its bar instead of showing 0%.
+    s = pct("anthropic-ratelimit-unified-5h-utilization")
+    w = pct("anthropic-ratelimit-unified-7d-utilization")
+    payload: dict = {}
+    if s is not None or w is not None:
+        if s is not None:
+            payload["s"] = s
+            payload["sr"] = reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset"))
+        if w is not None:
+            payload["w"] = w
+            payload["wr"] = reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset"))
+        payload["st"] = hdr("anthropic-ratelimit-unified-5h-status",
+                            hdr("anthropic-ratelimit-unified-status", "unknown"))
+        payload["acct"] = "pro"
+        payload["ok"] = True
     else:
+        # No spending header either -> no "s": the device shows "No limits".
         reset_ts = hdr("anthropic-ratelimit-unified-overage-reset")
-        payload = {
-            "s": pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
-            "sr": reset_minutes(reset_ts),
-            "w": 0,
-            "wr": 0,
+        spend = pct("anthropic-ratelimit-unified-overage-utilization")
+        if spend is not None:
+            payload["s"] = spend
+            payload["sr"] = reset_minutes(reset_ts)
+        payload.update({
             "st": hdr("anthropic-ratelimit-unified-status", "unknown"),
             "acct": "ent",
             **_billing_period_info(now, reset_ts),
             "ok": True,
-        }
+        })
     add_chime_field(payload)   # adds "c":1 iff the config opts in
     add_clock_fields(payload)   # adds "t" + "tf" iff the config opts in
     add_button_fields(payload)  # adds "bl"/"br" side-button key bindings

@@ -33,7 +33,7 @@ static inline uint8_t oldest_idx(void) {
     return (head + RING_SIZE - count) % RING_SIZE;
 }
 
-static void usage_rate_reset(void) {
+void usage_rate_clear(void) {
     count = 0;
     head  = 0;
 }
@@ -46,7 +46,7 @@ bool usage_rate_sample(float session_pct) {
         uint8_t latest = (head + RING_SIZE - 1) % RING_SIZE;
         // Session reset: pct dropped substantially. Restart tracking.
         if (session_pct + 5.0f < ring[latest].pct) {
-            usage_rate_reset();
+            usage_rate_clear();
             was_reset = true;
         }
     }

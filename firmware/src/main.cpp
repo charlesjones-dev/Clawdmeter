@@ -109,8 +109,12 @@ static bool parse_json(const char* json, UsageData* out) {
         return false;
     }
 
+    // Each usage window is present only when the account has it: Ultra has no
+    // 5-hour window, Enterprise has no weekly one. A missing key hides that row.
+    out->has_session = !doc["s"].isNull();
     out->session_pct = doc["s"] | 0.0f;
     out->session_reset_mins = doc["sr"] | -1;
+    out->has_weekly = !doc["w"].isNull();
     out->weekly_pct = doc["w"] | 0.0f;
     out->weekly_reset_mins = doc["wr"] | -1;
     strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
@@ -422,7 +426,12 @@ void loop() {
             keymap_apply(&usage);   // adopt/persist side-button bindings if the daemon sent them
             schedule_apply(&usage);     // work hours: screensaver + brightness, local time
             int g_before = usage_rate_group();
-            bool session_reset = usage_rate_sample(usage.session_pct);
+            // The usage rate follows the 5-hour session window. An account
+            // without one (Ultra) has no rate to track, so the splash stays in
+            // the idle group; {"ok":false} beats leave the history alone.
+            bool session_reset = false;
+            if (usage.has_session)  session_reset = usage_rate_sample(usage.session_pct);
+            else if (usage.ok)      usage_rate_clear();
             int g_after = usage_rate_group();
             // 5-hour session limit refilled → chime so the user knows they can
             // use Claude again (no-op on boards without a buzzer). Gated on the

@@ -1,6 +1,8 @@
 # Default sim scenario — one daemon payload per line, played in a loop.
 # Extra keys: "name" (window title), "hold_ms" (time on this state, default 3000).
 # Keys: space play/pause · arrows step · 1-9 jump · see boards/sim/board.h.
+# A window the account lacks is simply left out ("s" on Ultra, all of them on
+# "no limits"); the device hides that row.
 {"name":"fresh session","hold_ms":3000,"s":3.0,"sr":295,"w":12.0,"wr":9000,"st":"allowed","ok":true,"t":1785474000,"tf":24}
 {"name":"steady use","hold_ms":3000,"s":42.0,"sr":180,"w":33.0,"wr":7900,"st":"allowed","ok":true}
 {"name":"warning zone","hold_ms":3000,"s":78.0,"sr":75,"w":55.0,"wr":6400,"st":"allowed","ok":true}
@@ -12,3 +14,7 @@
 {"name":"fable maxed","hold_ms":4000,"s":100.0,"sr":40,"w":100.0,"wr":30,"m":100,"mr":30,"ml":"Fable","st":"rejected","ok":true}
 {"name":"enterprise on pace","hold_ms":3000,"s":37.0,"sr":-1,"acct":"ent","tp":40,"pd":30,"rd":"Aug 15","st":"allowed","ok":true}
 {"name":"enterprise over pace","hold_ms":4000,"s":88.0,"sr":-1,"acct":"ent","tp":52,"pd":30,"rd":"Aug 15","st":"allowed","ok":true}
+{"name":"ultra: weekly + fable (no 5h)","hold_ms":4000,"w":22.0,"wr":4300,"m":41,"mr":4300,"ml":"Fable","st":"allowed","ok":true}
+{"name":"ultra: weekly only","hold_ms":4000,"w":18.0,"wr":5900,"st":"allowed","ok":true}
+{"name":"no limits","hold_ms":3000,"st":"allowed","acct":"pro","ok":true}
+{"name":"enterprise, no spend limit","hold_ms":3000,"acct":"ent","tp":40,"pd":30,"rd":"Aug 15","st":"allowed","ok":true}

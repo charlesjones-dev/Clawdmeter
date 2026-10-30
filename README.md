@@ -25,11 +25,21 @@ upstream.
   model-scoped row, with the reset time beside each pill and a smaller status
   line. Accounts without a scoped window, and Enterprise accounts, keep the
   upstream two-row screen.
+- **Bars only for the limits the account has (Ultra).** Anthropic renamed
+  Max 5x to Max and Max 20x to Ultra, and verified Ultra accounts no longer
+  have a 5-hour limit. The weekly limits are unchanged. The daemons now send
+  only the windows the account reports, and the usage screen hides the bar
+  for every window that is missing: an Ultra account sees Weekly (and Fable)
+  with no empty Current bar. A lone bar is centered, and an account that
+  reports no limits at all shows "No limits". Without a 5-hour window, the
+  splash animations stay in the idle group and the reset chime never sounds.
+  Upstream always draws the Current and Weekly bars. See [Screens](#screens)
+  and [BLE protocol](#ble-protocol).
 - **Daemons read the OAuth usage endpoint.** All three daemons (Linux bash,
   macOS/Linux Python, Windows Python) now call `GET /api/oauth/usage`, the same
   source Claude Code's `/usage` screen uses. It returns the 5h/7d windows plus
   the per-model rows in one free call, so the once-a-minute Haiku request for
-  rate-limit headers is gone for Pro/Max accounts. That header probe is kept as
+  rate-limit headers is gone for Pro, Max and Ultra accounts. That header probe is kept as
   the fallback and still serves Enterprise. Payload gains optional
   `m`/`mr`/`ml` keys; see [BLE protocol](#ble-protocol). The bash daemon
   passes the token to curl on stdin for this call, as upstream does for its
@@ -85,6 +95,8 @@ tracks upstream `main` with no rebases, so merges stay clean).
 ## Screens
 
 The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash.
+
+**Usage bars:** the Usage view shows one bar for each limit your account has: Current (the 5-hour session), Weekly, and a per-model weekly bar such as Fable. A limit your account doesn't have gets no bar. Ultra accounts have no 5-hour limit, so they see only Weekly (and Fable). An account that reports no limits at all shows "No limits".
 
 **Work hours:** set `work_hours = 9am-5pm` (optionally `work_days = mon-fri`) in the daemon config and the screen runs at full brightness during work hours and at its dimmest outside them; `work_brightness` / `off_hours_brightness` change the levels. Add `screensaver_after = 10` and, outside work hours, the device also flips to the splash by itself after 10 minutes without a touch or button press. During work hours it never does, and a splash it put up on its own goes back to Usage when work hours start. See [`daemon/config.example`](daemon/config.example).
 
@@ -364,11 +376,12 @@ JSON payload format (written to RX):
 ```
 
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
+Each window's keys are sent only when the account has that window, and the device hides the bar for a window that is missing. Ultra accounts have no 5-hour window, so their payloads carry no `s`/`sr`. Enterprise payloads carry no `w`/`wr`. A payload with no window keys at all shows "No limits".
 Optional: `m` / `mr` / `ml` = a model-scoped weekly window (utilization %, reset minutes, server label — Fable today). When present the device shows a third row; older daemons never send it and the two-row layout is unchanged.
 `bl` / `br` = side-button key bindings as `[HID usage id, modifier bits]` (e.g. `[44,0]` = Space, `[43,2]` = Shift+Tab). The device persists the last mapping in NVS.
 `sch` = work-hours schedule as `[work start, work end, work-days mask, screensaver idle seconds, work brightness, off-hours brightness]`: start/end are minutes since local midnight (equal = no work hours), the mask has bit 0 = Sunday, idle seconds 0 = no screensaver, and brightness is a PWR-button level 1–4 (0 = leave alone). E.g. `[540,1020,62,600,4,1]` = 9:00–17:00 Mon–Fri, screensaver after 10 min, brightest at work, dimmest off-hours. `lt` = local wall-clock epoch, sent while any of it is active; the device advances it on its own clock between payloads. A payload without `sch` keeps the last settings.
 
-The daemons read these from `GET https://api.anthropic.com/api/oauth/usage` (the same endpoint Claude Code's `/usage` screen uses — one free call, no inference). Enterprise accounts have no 5h window there, so they fall back to the rate-limit headers of a minimal `/v1/messages` probe, as before.
+The daemons read these from `GET https://api.anthropic.com/api/oauth/usage` (the same endpoint Claude Code's `/usage` screen uses: one free call, no inference). Enterprise accounts have no usage window there, so they fall back to the rate-limit headers of a minimal `/v1/messages` probe, as before. The probe also serves Pro, Max and Ultra accounts when the endpoint fails. It treats the account as a subscription when it sees a 5h or 7d header, and as Enterprise otherwise.
 
 ## Development
 

@@ -72,6 +72,13 @@ Quota payloads with `"m"`/`"mr"`/`"ml"` (a model-scoped weekly window, e.g.
 Fable) switch the usage view to its three-row layout; without them it stays
 on two rows. The default scenario has states for both.
 
+A window missing from the payload gets no row, and the remaining rows close
+up. Leave out `"s"`/`"sr"` to see an Ultra account (no 5-hour window). Leave
+out every window key to see the "No limits" state. The default scenario ends
+with these states: Ultra with Weekly and Fable, Ultra with Weekly only, no
+limits, and Enterprise without a spending limit. `firmware/sim/test_usage_rows.sh`
+runs the sim headless once per payload shape and checks which rows it builds.
+
 Lines starting with `#` are comments. Lines containing an `"ss"` array are
 **session payloads** (issue #135 wire format) and go out on the session
 characteristic path; everything else is a quota payload.
